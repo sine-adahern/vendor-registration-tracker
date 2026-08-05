@@ -288,6 +288,36 @@ function Dashboard({ session }) {
     if (data?.signedUrl) window.open(data.signedUrl, "_blank");
   };
 
+  const deleteVendor = async (vendorId) => {
+    const target = vendors.find((v) => v.id === vendorId);
+    if (!target) return;
+    const ok = window.confirm(
+      `Delete "${target.name}"? This permanently removes its tasks, comments, and uploaded files. This cannot be undone.`
+    );
+    if (!ok) return;
+
+    // Row cascades handle tasks/comments/task_files rows, but NOT the objects in
+    // Storage — collect their paths from local state and remove them explicitly.
+    const paths = target.tasks
+      .flatMap((t) => (t.task_files || []).map((f) => f.path))
+      .filter(Boolean);
+
+    // Optimistic: drop from local state and leave the detail view if it's open.
+    setVendors((prev) => prev.filter((v) => v.id !== vendorId));
+    if (selectedId === vendorId) setSelectedId(null);
+
+    if (paths.length) {
+      const { error: storageErr } = await supabase.storage.from("vendor-files").remove(paths);
+      if (storageErr) console.warn("Some vendor files may not have been removed:", storageErr.message);
+    }
+
+    const { error } = await supabase.from("vendors").delete().eq("id", vendorId);
+    if (error) {
+      alert("Could not delete vendor: " + error.message);
+      loadVendors(); // re-sync local state with the database
+    }
+  };
+
   return (
     <Root>
       <header className="vt-topbar">
@@ -319,6 +349,7 @@ function Dashboard({ session }) {
           <DetailView
             vendor={selected}
             onBack={() => setSelectedId(null)}
+            onDelete={deleteVendor}
             onUpdateFieldLocal={updateFieldLocal}
             onPersistField={persistField}
             onSetStatus={setTaskStatus}
@@ -415,7 +446,7 @@ function Stat({ n, label, tone }) {
 /* ================================================================== */
 /*  DETAIL VIEW                                                        */
 /* ================================================================== */
-function DetailView({ vendor, onBack, onUpdateFieldLocal, onPersistField, onSetStatus, onAddFiles, onRemoveFile, onOpenFile, commentDraft, setCommentDraft, onAddComment }) {
+function DetailView({ vendor, onBack, onDelete, onUpdateFieldLocal, onPersistField, onSetStatus, onAddFiles, onRemoveFile, onOpenFile, commentDraft, setCommentDraft, onAddComment }) {
   const done = progress(vendor);
   const total = taskCount(vendor);
   const t = tone(vendor);
@@ -429,7 +460,10 @@ function DetailView({ vendor, onBack, onUpdateFieldLocal, onPersistField, onSetS
 
   return (
     <>
-      <button className="vt-back" onClick={onBack}>‹ All vendors</button>
+      <div className="vt-detail-topbar">
+        <button className="vt-back" onClick={onBack}>‹ All vendors</button>
+        <button className="vt-btn vt-btn-danger" onClick={() => onDelete(vendor.id)}>Delete vendor</button>
+      </div>
 
       <div className="vt-detail-head">
         <div>
@@ -489,7 +523,8 @@ function DetailView({ vendor, onBack, onUpdateFieldLocal, onPersistField, onSetS
                     ))}
                     <label className="vt-file-add">
                       + Add file
-                      <input type="file" accept=".pdf,.docx" multiple
+                      {/* Setting sheet (task 0) also accepts Excel; other doc tasks stay PDF/Word */}
+                      <input type="file" accept={task.task_index === 0 ? ".pdf,.docx,.xlsx,.xls" : ".pdf,.docx"} multiple
                         onChange={(e) => { if (e.target.files.length) onAddFiles(vendor.id, task.id, e.target.files); e.target.value = ""; }} />
                     </label>
                   </div>
@@ -566,6 +601,8 @@ const css = `
 .vt-btn-primary{background:var(--accent); color:#fff;}
 .vt-btn-primary:hover{background:#2942c4;}
 .vt-btn-block{width:100%; margin-top:16px;}
+.vt-btn-danger{background:var(--surface); color:#c0392b; border:1px solid #e6c3bf;}
+.vt-btn-danger:hover{background:#fbeceb; border-color:#c0392b;}
 .vt-btn:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
 
 .vt-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:24px;}
@@ -607,6 +644,8 @@ const css = `
 
 .vt-back{background:none; border:none; color:var(--muted); font:inherit; font-size:14px; cursor:pointer; padding:0; margin-bottom:18px;}
 .vt-back:hover{color:var(--accent);}
+.vt-detail-topbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;}
+.vt-detail-topbar .vt-back{margin-bottom:0;}
 .vt-detail-head{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:24px;}
 .vt-detail-progress{text-align:right; flex:0 0 auto;}
 .vt-detail-num{font-family:'Space Grotesk',sans-serif; font-size:30px; font-weight:700; line-height:1; display:block;}
