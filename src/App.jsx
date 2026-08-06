@@ -32,6 +32,26 @@ const PAGES = {
 const PAGE_KEYS = Object.keys(PAGES);
 const vendorPage = (v) => (v.registration_type === "sei" ? "sei" : "standard");
 
+// Top-level navigation: the two vendor pages plus the "New items" research page.
+const NAV = [
+  ...PAGE_KEYS.map((key) => ({ key, label: PAGES[key].label })),
+  { key: "items", label: "New items" },
+];
+
+/* ---- New items page ------------------------------------------------ *
+ * An "item" is something being researched to source. Each item holds a  *
+ * set of candidate vendors, and every candidate has a changeable state. */
+const ITEM_VENDOR_STATES = [
+  { value: "intro_email_sent", label: "Intro email sent", tone: "intro" },
+  { value: "specs_sent", label: "Specs sent", tone: "specs" },
+  { value: "sent_back_specs", label: "Sent us back specs", tone: "back" },
+  { value: "cant_provide", label: "Can't provide", tone: "cant" },
+  { value: "other", label: "Other", tone: "other" },
+];
+const DEFAULT_STATE = ITEM_VENDOR_STATES[0].value;
+const stateMeta = (v) => ITEM_VENDOR_STATES.find((s) => s.value === v) || ITEM_VENDOR_STATES[4];
+const ITEM_SELECT = "*, item_vendors(*), item_comments(*)";
+
 // The setting-sheet task also accepts Excel; every other document task stays PDF/Word.
 const isSettingSheet = (task) => /setting sheet/i.test(task.name || "");
 const acceptFor = (task) => (isSettingSheet(task) ? ".pdf,.docx,.xlsx,.xls" : ".pdf,.docx");
@@ -68,6 +88,31 @@ const tone = (v) => {
   if (v.tasks.length && done === v.tasks.length) return "done";
   if (done === 0 && !v.tasks.some((t) => t.status === "active")) return "todo";
   return "active";
+};
+
+const normalizeItem = (it) => ({
+  ...it,
+  item_vendors: (it.item_vendors || [])
+    .slice()
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+  item_comments: (it.item_comments || [])
+    .slice()
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+});
+
+const vendorCount = (it) => it.item_vendors.length;
+// "Resolved" = we have a definitive answer back (specs or a no).
+const resolvedCount = (it) =>
+  it.item_vendors.filter((v) => v.state === "sent_back_specs" || v.state === "cant_provide").length;
+const isSourced = (it) => it.item_vendors.some((v) => v.state === "sent_back_specs");
+const itemTone = (it) => {
+  if (!it.item_vendors.length) return "todo";
+  if (isSourced(it)) return "done";
+  return "active";
+};
+const itemLastActivity = (it) => {
+  const dates = it.item_vendors.map((v) => v.updated_at).filter(Boolean);
+  return dates.length ? dates.sort().slice(-1)[0] : it.created_at;
 };
 
 /* ================================================================== */
@@ -359,7 +404,10 @@ function Dashboard({ session }) {
       </header>
 
       <main className="vt-main">
-        {loading ? (
+        {page === "items" ? (
+          // Items research page — self-contained (loads its own data).
+          <ItemsSection me={me} page={page} onSwitch={switchPage} />
+        ) : loading ? (
           <p className="vt-loading">Loading…</p>
         ) : loadError ? (
           <p className="vt-loading">Couldn't load data: {loadError}</p>
@@ -398,15 +446,15 @@ function Dashboard({ session }) {
 /* ================================================================== */
 function PageNav({ page, onSwitch }) {
   return (
-    <nav className="vt-tabs" aria-label="Vendor sets">
-      {PAGE_KEYS.map((key) => (
+    <nav className="vt-tabs" aria-label="Sections">
+      {NAV.map(({ key, label }) => (
         <button
           key={key}
           className={`vt-tab ${page === key ? "vt-tab-on" : ""}`}
           aria-current={page === key ? "page" : undefined}
           onClick={() => onSwitch(key)}
         >
-          {PAGES[key].label}
+          {label}
         </button>
       ))}
     </nav>
@@ -609,6 +657,344 @@ function DetailView({ vendor, onBack, onDelete, onUpdateFieldLocal, onPersistFie
 }
 
 /* ================================================================== */
+/*  NEW ITEMS — data layer                                            */
+/*  Items being researched to source, each with candidate vendors.    */
+/* ================================================================== */
+function ItemsSection({ me, page, onSwitch }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [selectedId, setSelectedId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+
+  const loadItems = useCallback(async () => {
+    setLoading(true); setLoadError("");
+    const { data, error } = await supabase
+      .from("items").select(ITEM_SELECT)
+      .order("created_at", { ascending: false });
+    if (error) { setLoadError(error.message); setLoading(false); return; }
+    setItems((data || []).map(normalizeItem));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadItems(); }, [loadItems]);
+
+  const selected = items.find((it) => it.id === selectedId) || null;
+
+  const stats = useMemo(() => {
+    const total = items.length;
+    const candidates = items.reduce((n, it) => n + vendorCount(it), 0);
+    const sourced = items.filter(isSourced).length;
+    return { total, candidates, sourced };
+  }, [items]);
+
+  const addItem = async () => {
+    const name = draftName.trim();
+    if (!name) return;
+    const { data, error } = await supabase
+      .from("items").insert({ name, added_by: me }).select("id").single();
+    if (error) { alert("Could not add item: " + error.message); return; }
+    const { data: full } = await supabase.from("items").select(ITEM_SELECT).eq("id", data.id).single();
+    if (full) setItems((prev) => [normalizeItem(full), ...prev]);
+    setDraftName(""); setShowForm(false);
+  };
+
+  const deleteItem = async (itemId) => {
+    const target = items.find((it) => it.id === itemId);
+    if (!target) return;
+    const ok = window.confirm(
+      `Delete "${target.name}"? This permanently removes its candidate vendors and notes. This cannot be undone.`
+    );
+    if (!ok) return;
+    setItems((prev) => prev.filter((it) => it.id !== itemId));
+    if (selectedId === itemId) setSelectedId(null);
+    const { error } = await supabase.from("items").delete().eq("id", itemId);
+    if (error) { alert("Could not delete item: " + error.message); loadItems(); }
+  };
+
+  const updateItemFieldLocal = (itemId, field, value) =>
+    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, [field]: value } : it)));
+
+  const persistItemField = async (itemId, field, value) => {
+    const { error } = await supabase.from("items").update({ [field]: value }).eq("id", itemId);
+    if (error) alert("Could not save: " + error.message);
+  };
+
+  const addVendor = async (itemId, name) => {
+    const clean = name.trim();
+    if (!clean) return;
+    const { data, error } = await supabase
+      .from("item_vendors")
+      .insert({ item_id: itemId, name: clean, state: DEFAULT_STATE, added_by: me })
+      .select("*").single();
+    if (error) { alert("Could not add vendor: " + error.message); return; }
+    setItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, item_vendors: [...it.item_vendors, data] } : it))
+    );
+  };
+
+  const setVendorState = async (itemId, vendorId, state) => {
+    const updated_at = new Date().toISOString();
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId
+          ? { ...it, item_vendors: it.item_vendors.map((v) => (v.id === vendorId ? { ...v, state, updated_at } : v)) }
+          : it
+      )
+    );
+    const { error } = await supabase.from("item_vendors").update({ state, updated_at }).eq("id", vendorId);
+    if (error) { alert("Could not update state: " + error.message); loadItems(); }
+  };
+
+  const removeVendor = async (itemId, vendorId) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId ? { ...it, item_vendors: it.item_vendors.filter((v) => v.id !== vendorId) } : it
+      )
+    );
+    const { error } = await supabase.from("item_vendors").delete().eq("id", vendorId);
+    if (error) { alert("Could not remove vendor: " + error.message); loadItems(); }
+  };
+
+  const addComment = async (itemId, body) => {
+    const text = body.trim();
+    if (!text) return;
+    const { data, error } = await supabase
+      .from("item_comments").insert({ item_id: itemId, author: me, body: text }).select("*").single();
+    if (error) { alert("Could not post note: " + error.message); return; }
+    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, item_comments: [...it.item_comments, data] } : it)));
+    setCommentDraft("");
+  };
+
+  if (loading) return (<><PageNav page={page} onSwitch={onSwitch} /><p className="vt-loading">Loading…</p></>);
+  if (loadError) return (<><PageNav page={page} onSwitch={onSwitch} /><p className="vt-loading">Couldn't load items: {loadError}</p></>);
+
+  if (selected)
+    return (
+      <ItemDetailView
+        item={selected}
+        onBack={() => setSelectedId(null)}
+        onDelete={deleteItem}
+        onUpdateFieldLocal={updateItemFieldLocal}
+        onPersistField={persistItemField}
+        onAddVendor={addVendor}
+        onSetVendorState={setVendorState}
+        onRemoveVendor={removeVendor}
+        commentDraft={commentDraft} setCommentDraft={setCommentDraft}
+        onAddComment={addComment}
+      />
+    );
+
+  return (
+    <>
+      <PageNav page={page} onSwitch={onSwitch} />
+      <ItemsListView
+        items={items} stats={stats} me={me}
+        onOpen={setSelectedId}
+        showForm={showForm} setShowForm={setShowForm}
+        draftName={draftName} setDraftName={setDraftName}
+        onAdd={addItem}
+      />
+    </>
+  );
+}
+
+/* ================================================================== */
+/*  NEW ITEMS — list view                                             */
+/* ================================================================== */
+function ItemsListView({ items, stats, me, onOpen, showForm, setShowForm, draftName, setDraftName, onAdd }) {
+  return (
+    <>
+      <div className="vt-head-row">
+        <div>
+          <h1 className="vt-h1">New items</h1>
+          <p className="vt-sub">Items being researched to source, and the vendors in the running.</p>
+        </div>
+        <button className="vt-btn vt-btn-primary" onClick={() => setShowForm((s) => !s)}>
+          {showForm ? "Cancel" : "+ Add item"}
+        </button>
+      </div>
+
+      <div className="vt-stats">
+        <Stat n={stats.total} label="Items in research" tone="ink" />
+        <Stat n={stats.candidates} label="Candidate vendors" tone="active" />
+        <Stat n={stats.sourced} label="Sourced" tone="done" />
+      </div>
+
+      {showForm && (
+        <div className="vt-form-card">
+          <div className="vt-form-fields">
+            <label className="vt-field">
+              <span>Item name</span>
+              <input autoFocus placeholder="e.g. M3 stainless bolts" value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && onAdd()} />
+            </label>
+            <div className="vt-field vt-field-owner">
+              <span>Added by</span>
+              <div className="vt-owner-chip">{me}</div>
+            </div>
+          </div>
+          <p className="vt-form-note">Add candidate vendors and track their responses on the item's page.</p>
+          <button className="vt-btn vt-btn-primary" onClick={onAdd}>Add item</button>
+        </div>
+      )}
+
+      <div className="vt-list">
+        <div className="vt-list-head">
+          <span>Item</span><span>Added by</span><span>Vendors</span><span>Last activity</span>
+        </div>
+        {items.length === 0 && <p className="vt-empty vt-list-empty">No items yet. Add your first one above.</p>}
+        {items.map((it) => {
+          const t = itemTone(it);
+          const total = vendorCount(it);
+          const resolved = resolvedCount(it);
+          return (
+            <button key={it.id} className="vt-row" onClick={() => onOpen(it.id)}>
+              <span className={`vt-spine vt-tone-${t}`} aria-hidden />
+              <span className="vt-cell-vendor"><span className="vt-vendor-name">{it.name}</span></span>
+              <span className="vt-cell-owner">{it.added_by || "—"}</span>
+              <span className="vt-cell-progress">
+                {total === 0 ? (
+                  <span className="vt-bar-num">No vendors yet</span>
+                ) : (
+                  <>
+                    <span className="vt-bar">
+                      <span className={`vt-bar-fill vt-tone-${t}`} style={{ width: `${(resolved / total) * 100}%` }} />
+                    </span>
+                    <span className="vt-bar-num">{total} vendor{total === 1 ? "" : "s"}</span>
+                  </>
+                )}
+              </span>
+              <span className="vt-cell-date">{fmtDate(itemLastActivity(it))}</span>
+              <span className="vt-chev" aria-hidden>›</span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+/* ================================================================== */
+/*  NEW ITEMS — detail view (candidate vendors + notes)               */
+/* ================================================================== */
+function ItemDetailView({ item, onBack, onDelete, onUpdateFieldLocal, onPersistField, onAddVendor, onSetVendorState, onRemoveVendor, commentDraft, setCommentDraft, onAddComment }) {
+  const [vendorDraft, setVendorDraft] = useState("");
+  const t = itemTone(item);
+  const total = vendorCount(item);
+
+  const infoFields = [
+    { key: "requester", label: "Requested by", type: "text", placeholder: "Who needs this" },
+    { key: "category", label: "Category", type: "text", placeholder: "e.g. Fasteners" },
+    { key: "quantity", label: "Quantity needed", type: "text", placeholder: "e.g. 500" },
+    { key: "part_ref", label: "Part / ref no.", type: "text", placeholder: "e.g. DIN 912" },
+  ];
+
+  const submitVendor = () => { if (vendorDraft.trim()) { onAddVendor(item.id, vendorDraft); setVendorDraft(""); } };
+
+  return (
+    <>
+      <div className="vt-detail-topbar">
+        <button className="vt-back" onClick={onBack}>‹ All items</button>
+        <button className="vt-btn vt-btn-danger" onClick={() => onDelete(item.id)}>Delete item</button>
+      </div>
+
+      <div className="vt-detail-head">
+        <div>
+          <h1 className="vt-h1">{item.name}</h1>
+          <p className="vt-sub">Added by {item.added_by || "—"} · {fmtDate(item.created_at)}</p>
+        </div>
+        <div className="vt-detail-progress">
+          <span className={`vt-detail-num vt-tone-text-${t}`}>{total}</span>
+          <span className="vt-detail-num-label">candidate{total === 1 ? "" : "s"}</span>
+        </div>
+      </div>
+
+      <div className="vt-info">
+        {infoFields.map((f) => (
+          <label key={f.key} className="vt-info-field">
+            <span className="vt-info-label">{f.label}</span>
+            <input
+              type={f.type}
+              value={item[f.key] || ""}
+              placeholder={f.placeholder}
+              onChange={(e) => onUpdateFieldLocal(item.id, f.key, e.target.value)}
+              onBlur={(e) => onPersistField(item.id, f.key, e.target.value)}
+            />
+          </label>
+        ))}
+      </div>
+
+      <div className="vt-columns">
+        <section className="vt-panel">
+          <h2 className="vt-h2">Candidate vendors</h2>
+          <p className="vt-panel-hint">Update each vendor's state as you hear back.</p>
+
+          {total === 0 ? (
+            <p className="vt-empty">No vendors yet. Add the first candidate below.</p>
+          ) : (
+            <ol className="vt-tasks">
+              {item.item_vendors.map((v, i) => (
+                <li key={v.id} className="vt-task">
+                  <div className="vt-task-main vt-vendor-row">
+                    <span className="vt-task-idx">{String(i + 1).padStart(2, "0")}</span>
+                    <span className="vt-task-name">{v.name}</span>
+                    <span className="vt-task-date">{fmtDate(v.updated_at)}</span>
+                    <select
+                      className={`vt-select vt-select-state-${stateMeta(v.state).tone}`}
+                      value={v.state}
+                      onChange={(e) => onSetVendorState(item.id, v.id, e.target.value)}
+                      aria-label={`State for ${v.name}`}
+                    >
+                      {ITEM_VENDOR_STATES.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                    </select>
+                    <button className="vt-vendor-x" onClick={() => onRemoveVendor(item.id, v.id)} aria-label={`Remove ${v.name}`}>×</button>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          <div className="vt-add-inline">
+            <input
+              placeholder="Add a candidate vendor…"
+              value={vendorDraft}
+              onChange={(e) => setVendorDraft(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitVendor()}
+            />
+            <button className="vt-btn vt-btn-primary" onClick={submitVendor}>Add</button>
+          </div>
+        </section>
+
+        <section className="vt-panel">
+          <h2 className="vt-h2">Notes</h2>
+          <div className="vt-comments">
+            {item.item_comments.length === 0 && <p className="vt-empty">No notes yet. Add the first one below.</p>}
+            {item.item_comments.map((c) => (
+              <div key={c.id} className="vt-comment">
+                <div className="vt-comment-top">
+                  <span className="vt-comment-author">{c.author}</span>
+                  <span className="vt-comment-time">{fmtDate(c.created_at)}</span>
+                </div>
+                <p className="vt-comment-text">{c.body}</p>
+              </div>
+            ))}
+          </div>
+          <div className="vt-comment-box">
+            <textarea placeholder="Add a note…" rows={2} value={commentDraft}
+              onChange={(e) => setCommentDraft(e.target.value)} />
+            <button className="vt-btn vt-btn-primary" onClick={() => onAddComment(item.id, commentDraft)}>Post</button>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
+/* ================================================================== */
 /*  STYLES                                                             */
 /* ================================================================== */
 const css = `
@@ -729,6 +1115,22 @@ const css = `
 .vt-select-active{background:var(--active-soft); color:#a9751a; border-color:#eeddba;}
 .vt-select-done{background:var(--done-soft); color:var(--done); border-color:#c4e6d5;}
 
+/* candidate-vendor states (New items page) */
+.vt-select-state-intro{background:#E9EEFB; color:#2f4aa6; border-color:#c9d4f2;}
+.vt-select-state-specs{background:var(--active-soft); color:#a9751a; border-color:#eeddba;}
+.vt-select-state-back{background:var(--done-soft); color:var(--done); border-color:#c4e6d5;}
+.vt-select-state-cant{background:#FBEAE8; color:#c0392b; border-color:#e6c3bf;}
+.vt-select-state-other{background:var(--todo-soft); color:var(--muted); border-color:var(--line);}
+
+.vt-vendor-row{grid-template-columns:auto 1fr auto auto auto;}
+.vt-vendor-x{border:none; background:none; color:var(--muted); cursor:pointer; font-size:18px; line-height:1; padding:0 2px; margin-left:2px;}
+.vt-vendor-x:hover{color:#c0392b;}
+
+.vt-add-inline{display:flex; gap:8px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line);}
+.vt-add-inline input{flex:1; font:inherit; font-size:14px; color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:9px 12px; background:#FAFBFD;}
+.vt-add-inline input:focus{outline:2px solid var(--accent-soft); border-color:var(--accent); background:var(--surface);}
+.vt-add-inline .vt-btn{white-space:nowrap;}
+
 .vt-files{display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 0 30px;}
 .vt-file-chip{display:inline-flex; align-items:center; gap:6px; background:#F2F5FA; border:1px solid var(--line); border-radius:8px; padding:5px 8px 5px 10px; font-size:12.5px;}
 .vt-file-ico{color:var(--accent); font-size:12px;}
@@ -776,5 +1178,9 @@ const css = `
   .vt-task-date{grid-column:2; grid-row:2;}
   .vt-select{grid-column:1 / -1; width:100%;}
   .vt-files{margin-left:0;}
+  .vt-vendor-row{grid-template-columns:auto 1fr auto; gap:6px 8px;}
+  .vt-vendor-row .vt-task-date{grid-column:1 / -1; grid-row:2;}
+  .vt-vendor-row .vt-select{grid-column:1 / -1; grid-row:3; width:100%;}
+  .vt-vendor-x{grid-column:3; grid-row:1; justify-self:end;}
 }
 `;
