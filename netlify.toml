@@ -2,6 +2,13 @@
   command = "npm run build"
   publish = "dist"
 
+# Serverless functions live here. morning-vendor-digest.mjs is a scheduled
+# function (its cron is declared in-file via `export const config`), running
+# hourly and emailing the digest at 09:00 Europe/London.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
 # Single-page app fallback so refreshes don't 404
 [[redirects]]
   from = "/*"
