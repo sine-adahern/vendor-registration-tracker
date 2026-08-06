@@ -21,13 +21,11 @@ const PAGES = {
   standard: {
     label: "Vendors",
     title: "Vendors",
-    subtitle: "Track each vendor from registration through to VMS sign-off.",
     formNote: "Registering creates the 7 standard onboarding tasks for this vendor.",
   },
   sei: {
     label: "SEI registration",
     title: "SEI registration",
-    subtitle: "Track each SEI vendor through its registration checklist.",
     formNote: "Registering creates the 5 SEI onboarding tasks for this vendor.",
   },
 };
@@ -116,8 +114,7 @@ function ConfigNeeded() {
       <div className="vt-auth">
         <div className="vt-auth-card">
           <div className="vt-brand vt-brand-center">
-            <span className="vt-mark" aria-hidden>◐</span>
-            <span className="vt-wordmark">Vendorline</span>
+            <span className="vt-wordmark">onboarding tracker</span>
           </div>
           <h1 className="vt-auth-title">Almost there</h1>
           <p className="vt-config-text">
@@ -160,8 +157,7 @@ function Login() {
       <div className="vt-auth">
         <div className="vt-auth-card">
           <div className="vt-brand vt-brand-center">
-            <span className="vt-mark" aria-hidden>◐</span>
-            <span className="vt-wordmark">Vendorline</span>
+            <span className="vt-wordmark">onboarding tracker</span>
           </div>
           <h1 className="vt-auth-title">{mode === "signin" ? "Sign in" : "Create account"}</h1>
 
@@ -354,9 +350,7 @@ function Dashboard({ session }) {
     <Root>
       <header className="vt-topbar">
         <div className="vt-brand">
-          <span className="vt-mark" aria-hidden>◐</span>
-          <span className="vt-wordmark">Vendorline</span>
-          <span className="vt-brand-sub">onboarding tracker</span>
+          <span className="vt-wordmark">onboarding tracker</span>
         </div>
         <div className="vt-me">
           <span className="vt-me-email">{me}</span>
@@ -374,7 +368,7 @@ function Dashboard({ session }) {
             <PageNav page={page} onSwitch={switchPage} />
             <ListView
               vendors={pageVendors} stats={stats} me={me}
-              title={PAGES[page].title} subtitle={PAGES[page].subtitle} formNote={PAGES[page].formNote}
+              title={PAGES[page].title} formNote={PAGES[page].formNote}
               onOpen={setSelectedId}
               showForm={showForm} setShowForm={setShowForm}
               draftName={draftName} setDraftName={setDraftName}
@@ -422,13 +416,12 @@ function PageNav({ page, onSwitch }) {
 /* ================================================================== */
 /*  LIST VIEW                                                          */
 /* ================================================================== */
-function ListView({ vendors, stats, me, title, subtitle, formNote, onOpen, showForm, setShowForm, draftName, setDraftName, onRegister }) {
+function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setShowForm, draftName, setDraftName, onRegister }) {
   return (
     <>
       <div className="vt-head-row">
         <div>
           <h1 className="vt-h1">{title}</h1>
-          <p className="vt-sub">{subtitle}</p>
         </div>
         <button className="vt-btn vt-btn-primary" onClick={() => setShowForm((s) => !s)}>
           {showForm ? "Cancel" : "+ Register vendor"}
@@ -622,8 +615,8 @@ const css = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 .vt-root{
-  --bg:#EAEDF3; --surface:#FFFFFF; --ink:#141C29; --muted:#647089;
-  --line:#E1E6EF; --accent:#3452E1; --accent-soft:#EBEEFC;
+  --bg:#FFFFFF; --surface:#FFFFFF; --ink:#141C29; --muted:#647089;
+  --line:#E1E6EF; --accent:#000080; --accent-soft:#E6E6F2;
   --todo:#98A2B6; --active:#E39A26; --done:#2E9E6B;
   --active-soft:#FBF1DE; --done-soft:#E4F4EC; --todo-soft:#EEF1F6;
   font-family:'Inter',system-ui,sans-serif; color:var(--ink);
@@ -634,9 +627,7 @@ const css = `
 .vt-topbar{display:flex; align-items:center; justify-content:space-between; padding:16px 28px; background:var(--surface); border-bottom:1px solid var(--line);}
 .vt-brand{display:flex; align-items:baseline; gap:10px;}
 .vt-brand-center{justify-content:center; margin-bottom:18px;}
-.vt-mark{color:var(--accent); font-size:20px; transform:translateY(2px);}
 .vt-wordmark{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:19px; letter-spacing:-.02em;}
-.vt-brand-sub{color:var(--muted); font-size:13px;}
 .vt-me{display:flex; align-items:center; gap:12px; font-size:13px; color:var(--muted);}
 .vt-me-email{font-weight:600; color:var(--ink);}
 .vt-signout{font:inherit; font-size:13px; font-weight:600; color:var(--muted); background:none; border:1px solid var(--line); border-radius:7px; padding:6px 12px; cursor:pointer;}
@@ -661,7 +652,7 @@ const css = `
 .vt-btn:active{transform:translateY(1px);}
 .vt-btn:disabled{opacity:.6; cursor:default;}
 .vt-btn-primary{background:var(--accent); color:#fff;}
-.vt-btn-primary:hover{background:#2942c4;}
+.vt-btn-primary:hover{background:#0000A6;}
 .vt-btn-block{width:100%; margin-top:16px;}
 .vt-btn-danger{background:var(--surface); color:#c0392b; border:1px solid #e6c3bf;}
 .vt-btn-danger:hover{background:#fbeceb; border-color:#c0392b;}
@@ -745,7 +736,7 @@ const css = `
 .vt-file-link:hover{text-decoration:underline;}
 .vt-file-x{border:none; background:none; color:var(--muted); cursor:pointer; font-size:15px; line-height:1; padding:0 2px;}
 .vt-file-x:hover{color:#c0392b;}
-.vt-file-add{display:inline-flex; align-items:center; font-size:12.5px; font-weight:600; color:var(--accent); border:1px dashed #b9c3f0; border-radius:8px; padding:5px 10px; cursor:pointer;}
+.vt-file-add{display:inline-flex; align-items:center; font-size:12.5px; font-weight:600; color:var(--accent); border:1px dashed #c3c3e0; border-radius:8px; padding:5px 10px; cursor:pointer;}
 .vt-file-add:hover{background:var(--accent-soft);}
 .vt-file-add input{display:none;}
 
