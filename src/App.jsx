@@ -15,6 +15,29 @@ const STATUS_OPTIONS = [
 
 const VENDOR_SELECT = "*, tasks(*, task_files(*)), comments(*)";
 
+// The two vendor "pages". Each registers vendors of its own registration_type,
+// which the Postgres trigger uses to pick the right task checklist.
+const PAGES = {
+  standard: {
+    label: "Vendors",
+    title: "Vendors",
+    subtitle: "Track each vendor from registration through to VMS sign-off.",
+    formNote: "Registering creates the 7 standard onboarding tasks for this vendor.",
+  },
+  sei: {
+    label: "SEI registration",
+    title: "SEI registration",
+    subtitle: "Track each SEI vendor through its registration checklist.",
+    formNote: "Registering creates the 5 SEI onboarding tasks for this vendor.",
+  },
+};
+const PAGE_KEYS = Object.keys(PAGES);
+const vendorPage = (v) => (v.registration_type === "sei" ? "sei" : "standard");
+
+// The setting-sheet task also accepts Excel; every other document task stays PDF/Word.
+const isSettingSheet = (task) => /setting sheet/i.test(task.name || "");
+const acceptFor = (task) => (isSettingSheet(task) ? ".pdf,.docx,.xlsx,.xls" : ".pdf,.docx");
+
 const fmtDate = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -181,10 +204,18 @@ function Dashboard({ session }) {
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [page, setPage] = useState("standard");
   const [selectedId, setSelectedId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
+
+  const switchPage = (p) => {
+    setPage(p);
+    setSelectedId(null);
+    setShowForm(false);
+    setDraftName("");
+  };
 
   const loadVendors = useCallback(async () => {
     setLoading(true); setLoadError("");
@@ -199,18 +230,19 @@ function Dashboard({ session }) {
   useEffect(() => { loadVendors(); }, [loadVendors]);
 
   const selected = vendors.find((v) => v.id === selectedId) || null;
+  const pageVendors = useMemo(() => vendors.filter((v) => vendorPage(v) === page), [vendors, page]);
 
   const stats = useMemo(() => {
-    const total = vendors.length;
-    const complete = vendors.filter((v) => v.tasks.length && progress(v) === v.tasks.length).length;
+    const total = pageVendors.length;
+    const complete = pageVendors.filter((v) => v.tasks.length && progress(v) === v.tasks.length).length;
     return { total, complete, inProgress: total - complete };
-  }, [vendors]);
+  }, [pageVendors]);
 
   const registerVendor = async () => {
     const name = draftName.trim();
     if (!name) return;
     const { data, error } = await supabase
-      .from("vendors").insert({ name, added_by: me }).select("id").single();
+      .from("vendors").insert({ name, added_by: me, registration_type: page }).select("id").single();
     if (error) { alert("Could not register vendor: " + error.message); return; }
     const { data: full } = await supabase
       .from("vendors").select(VENDOR_SELECT).eq("id", data.id).single();
@@ -338,13 +370,17 @@ function Dashboard({ session }) {
         ) : loadError ? (
           <p className="vt-loading">Couldn't load data: {loadError}</p>
         ) : !selected ? (
-          <ListView
-            vendors={vendors} stats={stats} me={me}
-            onOpen={setSelectedId}
-            showForm={showForm} setShowForm={setShowForm}
-            draftName={draftName} setDraftName={setDraftName}
-            onRegister={registerVendor}
-          />
+          <>
+            <PageNav page={page} onSwitch={switchPage} />
+            <ListView
+              vendors={pageVendors} stats={stats} me={me}
+              title={PAGES[page].title} subtitle={PAGES[page].subtitle} formNote={PAGES[page].formNote}
+              onOpen={setSelectedId}
+              showForm={showForm} setShowForm={setShowForm}
+              draftName={draftName} setDraftName={setDraftName}
+              onRegister={registerVendor}
+            />
+          </>
         ) : (
           <DetailView
             vendor={selected}
@@ -364,15 +400,35 @@ function Dashboard({ session }) {
 }
 
 /* ================================================================== */
+/*  PAGE NAV (switch between vendor sets)                              */
+/* ================================================================== */
+function PageNav({ page, onSwitch }) {
+  return (
+    <nav className="vt-tabs" aria-label="Vendor sets">
+      {PAGE_KEYS.map((key) => (
+        <button
+          key={key}
+          className={`vt-tab ${page === key ? "vt-tab-on" : ""}`}
+          aria-current={page === key ? "page" : undefined}
+          onClick={() => onSwitch(key)}
+        >
+          {PAGES[key].label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/* ================================================================== */
 /*  LIST VIEW                                                          */
 /* ================================================================== */
-function ListView({ vendors, stats, me, onOpen, showForm, setShowForm, draftName, setDraftName, onRegister }) {
+function ListView({ vendors, stats, me, title, subtitle, formNote, onOpen, showForm, setShowForm, draftName, setDraftName, onRegister }) {
   return (
     <>
       <div className="vt-head-row">
         <div>
-          <h1 className="vt-h1">Vendors</h1>
-          <p className="vt-sub">Track each vendor from registration through to VMS sign-off.</p>
+          <h1 className="vt-h1">{title}</h1>
+          <p className="vt-sub">{subtitle}</p>
         </div>
         <button className="vt-btn vt-btn-primary" onClick={() => setShowForm((s) => !s)}>
           {showForm ? "Cancel" : "+ Register vendor"}
@@ -399,7 +455,7 @@ function ListView({ vendors, stats, me, onOpen, showForm, setShowForm, draftName
               <div className="vt-owner-chip">{me}</div>
             </div>
           </div>
-          <p className="vt-form-note">Registering creates the 7 standard onboarding tasks for this vendor.</p>
+          <p className="vt-form-note">{formNote}</p>
           <button className="vt-btn vt-btn-primary" onClick={onRegister}>Register &amp; create tasks</button>
         </div>
       )}
@@ -523,8 +579,8 @@ function DetailView({ vendor, onBack, onDelete, onUpdateFieldLocal, onPersistFie
                     ))}
                     <label className="vt-file-add">
                       + Add file
-                      {/* Setting sheet (task 0) also accepts Excel; other doc tasks stay PDF/Word */}
-                      <input type="file" accept={task.task_index === 0 ? ".pdf,.docx,.xlsx,.xls" : ".pdf,.docx"} multiple
+                      {/* Setting sheet also accepts Excel; other document tasks stay PDF/Word */}
+                      <input type="file" accept={acceptFor(task)} multiple
                         onChange={(e) => { if (e.target.files.length) onAddFiles(vendor.id, task.id, e.target.files); e.target.value = ""; }} />
                     </label>
                   </div>
@@ -588,6 +644,12 @@ const css = `
 
 .vt-main{max-width:960px; margin:0 auto; padding:32px 28px 64px;}
 .vt-loading{color:var(--muted); font-size:15px; padding:40px 0; text-align:center;}
+
+.vt-tabs{display:inline-flex; gap:4px; background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:22px;}
+.vt-tab{font:inherit; font-size:14px; font-weight:600; color:var(--muted); background:none; border:none; border-radius:7px; padding:8px 16px; cursor:pointer; transition:background .15s, color .15s;}
+.vt-tab:hover{color:var(--ink);}
+.vt-tab-on, .vt-tab-on:hover{background:var(--accent); color:#fff;}
+.vt-tab:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
 
 .vt-h1{font-family:'Space Grotesk',sans-serif; font-size:26px; font-weight:700; letter-spacing:-.02em; margin:0;}
 .vt-sub{color:var(--muted); font-size:14px; margin:6px 0 0;}
