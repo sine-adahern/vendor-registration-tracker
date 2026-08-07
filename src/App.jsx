@@ -32,10 +32,12 @@ const PAGES = {
 const PAGE_KEYS = Object.keys(PAGES);
 const vendorPage = (v) => (v.registration_type === "sei" ? "sei" : "standard");
 
-// Top-level navigation: the two vendor pages plus the "New items" research page.
+// Top-level navigation: the two vendor pages, the "New items" research page,
+// and the "Insights" page (infographics drawn from the two vendor pages).
 const NAV = [
   ...PAGE_KEYS.map((key) => ({ key, label: PAGES[key].label })),
   { key: "items", label: "New items" },
+  { key: "insights", label: "Insights" },
 ];
 
 /* ---- New items page ------------------------------------------------ *
@@ -88,6 +90,77 @@ const tone = (v) => {
   if (v.tasks.length && done === v.tasks.length) return "done";
   if (done === 0 && !v.tasks.some((t) => t.status === "active")) return "todo";
   return "active";
+};
+
+/* ---- Insights helpers -------------------------------------------- *
+ * Aggregations for the infographics page. They only ever look at the  *
+ * vendor records (both "standard" and "sei" registration types), so   *
+ * the Insights page reflects exactly what's on the two vendor pages.  */
+const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// How many vendors in a set are not-started / in-progress / complete.
+const statusSplit = (list) => {
+  const out = { todo: 0, active: 0, done: 0 };
+  list.forEach((v) => { out[tone(v)] += 1; });
+  return out;
+};
+
+// Total tasks and completed tasks across a set of vendors.
+const taskTotals = (list) => {
+  let done = 0, total = 0;
+  list.forEach((v) => { done += progress(v); total += v.tasks.length; });
+  return { done, total };
+};
+
+// Count of uploaded documents across a set of vendors.
+const fileCount = (list) =>
+  list.reduce((n, v) => n + v.tasks.reduce((m, t) => m + (t.task_files?.length || 0), 0), 0);
+
+// Per-task completion, grouped by task name and kept in checklist order.
+// Reveals where vendors get stuck (which onboarding step lags behind).
+const taskCompletion = (list) => {
+  const map = new Map(); // name -> { name, order, done, total }
+  list.forEach((v) =>
+    v.tasks.forEach((t) => {
+      const row = map.get(t.name) || { name: t.name, order: t.task_index, done: 0, total: 0 };
+      row.total += 1;
+      if (t.status === "done") row.done += 1;
+      row.order = Math.min(row.order, t.task_index);
+      map.set(t.name, row);
+    })
+  );
+  return [...map.values()].sort((a, b) => a.order - b.order);
+};
+
+// Vendors created per month over the last `months` months, split by page type.
+const registrationsByMonth = (list, months = 6) => {
+  const now = new Date();
+  const buckets = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    buckets.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: MONTH_LABELS[d.getMonth()], standard: 0, sei: 0 });
+  }
+  const index = new Map(buckets.map((b, i) => [b.key, i]));
+  list.forEach((v) => {
+    if (!v.created_at) return;
+    const d = new Date(v.created_at);
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    if (index.has(key)) buckets[index.get(key)][vendorPage(v)] += 1;
+  });
+  return buckets;
+};
+
+// Vendors grouped by the person who registered them, split by page type.
+const registrationsByOwner = (list, limit = 6) => {
+  const map = new Map();
+  list.forEach((v) => {
+    const who = v.added_by || "—";
+    const row = map.get(who) || { who, standard: 0, sei: 0, total: 0 };
+    row[vendorPage(v)] += 1;
+    row.total += 1;
+    map.set(who, row);
+  });
+  return [...map.values()].sort((a, b) => b.total - a.total).slice(0, limit);
 };
 
 const normalizeItem = (it) => ({
@@ -407,6 +480,18 @@ function Dashboard({ session }) {
         {page === "items" ? (
           // Items research page — self-contained (loads its own data).
           <ItemsSection me={me} page={page} onSwitch={switchPage} />
+        ) : page === "insights" ? (
+          // Insights page — infographics built from the loaded vendor records.
+          <>
+            <PageNav page={page} onSwitch={switchPage} />
+            {loading ? (
+              <p className="vt-loading">Loading…</p>
+            ) : loadError ? (
+              <p className="vt-loading">Couldn't load data: {loadError}</p>
+            ) : (
+              <InsightsSection vendors={vendors} />
+            )}
+          </>
         ) : loading ? (
           <p className="vt-loading">Loading…</p>
         ) : loadError ? (
@@ -995,6 +1080,290 @@ function ItemDetailView({ item, onBack, onDelete, onUpdateFieldLocal, onPersistF
 }
 
 /* ================================================================== */
+/*  INSIGHTS — infographics drawn from the two vendor pages            */
+/* ================================================================== */
+const STATUS_SERIES = [
+  { key: "done", label: "Complete", color: "var(--done)" },
+  { key: "active", label: "In progress", color: "var(--active)" },
+  { key: "todo", label: "Not started", color: "var(--todo)" },
+];
+const PAGE_SERIES = [
+  { key: "standard", label: "Vendors", color: "var(--accent)" },
+  { key: "sei", label: "SEI registration", color: "var(--sei)" },
+];
+
+function InsightsSection({ vendors }) {
+  const { all, standard, sei } = useMemo(() => ({
+    all: vendors,
+    standard: vendors.filter((v) => vendorPage(v) === "standard"),
+    sei: vendors.filter((v) => vendorPage(v) === "sei"),
+  }), [vendors]);
+
+  const overall = useMemo(() => {
+    const t = taskTotals(all);
+    const complete = all.filter((v) => v.tasks.length && progress(v) === v.tasks.length).length;
+    return {
+      total: all.length,
+      complete,
+      inProgress: all.length - complete,
+      rate: t.total ? Math.round((t.done / t.total) * 100) : 0,
+      files: fileCount(all),
+    };
+  }, [all]);
+
+  const monthly = useMemo(() => registrationsByMonth(all, 6), [all]);
+  const owners = useMemo(() => registrationsByOwner(all, 6), [all]);
+
+  const header = (
+    <div className="vt-head-row">
+      <div>
+        <h1 className="vt-h1">Insights</h1>
+        <p className="vt-sub">A visual summary of the Vendors and SEI registration pages.</p>
+      </div>
+    </div>
+  );
+
+  if (all.length === 0) {
+    return (
+      <>
+        {header}
+        <div className="vt-panel">
+          <p className="vt-empty">
+            No vendors registered yet. Once you add vendors on the Vendors or SEI registration
+            pages, their infographics will appear here.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {header}
+
+      <div className="vt-stats vt-stats-4">
+        <Stat n={overall.total} label="Total vendors" tone="ink" />
+        <Stat n={overall.inProgress} label="In progress" tone="active" />
+        <Stat n={overall.complete} label="Complete" tone="done" />
+        <Stat n={`${overall.rate}%`} label="Tasks completed" tone="ink" />
+      </div>
+
+      <div className="vt-ig-row">
+        <section className="vt-panel">
+          <h2 className="vt-h2">Vendors by status</h2>
+          <p className="vt-panel-hint">All {overall.total} vendor{overall.total === 1 ? "" : "s"} across both pages.</p>
+          <Donut split={statusSplit(all)} total={all.length} />
+        </section>
+
+        <section className="vt-panel">
+          <h2 className="vt-h2">Status by page</h2>
+          <p className="vt-panel-hint">How each page's vendors are progressing.</p>
+          <div className="vt-ig-barset">
+            <StatusStack label="Vendors" split={statusSplit(standard)} count={standard.length} />
+            <StatusStack label="SEI registration" split={statusSplit(sei)} count={sei.length} />
+          </div>
+          <Legend series={STATUS_SERIES} />
+        </section>
+      </div>
+
+      <div className="vt-ig-row">
+        <TaskFunnel title="Onboarding progress — Vendors" list={standard} />
+        <TaskFunnel title="Onboarding progress — SEI registration" list={sei} />
+      </div>
+
+      <section className="vt-panel vt-ig-block">
+        <h2 className="vt-h2">Registrations over time</h2>
+        <p className="vt-panel-hint">Vendors registered in the last 6 months, by page.</p>
+        <ColumnChart data={monthly} />
+        <Legend series={PAGE_SERIES} />
+      </section>
+
+      <section className="vt-panel vt-ig-block">
+        <h2 className="vt-h2">Registrations by team member</h2>
+        <p className="vt-panel-hint">Who registered each vendor, split by page. {overall.files} document{overall.files === 1 ? "" : "s"} on file in total.</p>
+        <OwnerBars owners={owners} />
+        <Legend series={PAGE_SERIES} />
+      </section>
+    </>
+  );
+}
+
+function Legend({ series }) {
+  return (
+    <div className="vt-ig-legend">
+      {series.map((s) => (
+        <span key={s.key} className="vt-ig-legend-item">
+          <span className="vt-ig-swatch" style={{ background: s.color }} aria-hidden />
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Doughnut chart of vendor status (SVG arcs via stroke-dasharray).
+function Donut({ split, total }) {
+  const r = 54, sw = 22, C = 2 * Math.PI * r;
+  let offset = 0;
+  const segs = STATUS_SERIES
+    .map((s) => ({ ...s, value: split[s.key] || 0 }))
+    .filter((s) => s.value > 0);
+
+  return (
+    <div className="vt-ig-donut">
+      <svg viewBox="0 0 140 140" className="vt-ig-donut-svg" role="img" aria-label="Vendor status breakdown">
+        <circle cx="70" cy="70" r={r} fill="none" stroke="var(--line)" strokeWidth={sw} />
+        {total > 0 && segs.map((s) => {
+          const len = (s.value / total) * C;
+          const seg = (
+            <circle
+              key={s.key} cx="70" cy="70" r={r} fill="none"
+              stroke={s.color} strokeWidth={sw}
+              strokeDasharray={`${len} ${C - len}`} strokeDashoffset={-offset}
+              transform="rotate(-90 70 70)"
+            />
+          );
+          offset += len;
+          return seg;
+        })}
+        <text x="70" y="66" textAnchor="middle" className="vt-ig-donut-num">{total}</text>
+        <text x="70" y="84" textAnchor="middle" className="vt-ig-donut-lbl">vendors</text>
+      </svg>
+      <div className="vt-ig-donut-legend">
+        {STATUS_SERIES.map((s) => (
+          <div key={s.key} className="vt-ig-dl-row">
+            <span className="vt-ig-swatch" style={{ background: s.color }} aria-hidden />
+            <span className="vt-ig-dl-label">{s.label}</span>
+            <span className="vt-ig-dl-val">{split[s.key] || 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// One horizontal stacked bar summarising a page's vendors by status.
+function StatusStack({ label, split, count }) {
+  return (
+    <div className="vt-ig-stack">
+      <div className="vt-ig-stack-top">
+        <span className="vt-ig-stack-label">{label}</span>
+        <span className="vt-ig-stack-count">{count} vendor{count === 1 ? "" : "s"}</span>
+      </div>
+      <div className="vt-ig-track">
+        {count === 0 ? (
+          <span className="vt-ig-track-empty">No vendors yet</span>
+        ) : (
+          STATUS_SERIES.map((s) => {
+            const val = split[s.key] || 0;
+            if (!val) return null;
+            return (
+              <span key={s.key} className="vt-ig-seg"
+                style={{ width: `${(val / count) * 100}%`, background: s.color }}
+                title={`${s.label}: ${val}`} />
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Per-task completion bars for one page's checklist (the bottleneck view).
+function TaskFunnel({ title, list }) {
+  const rows = useMemo(() => taskCompletion(list), [list]);
+  return (
+    <section className="vt-panel">
+      <h2 className="vt-h2">{title}</h2>
+      {list.length === 0 ? (
+        <p className="vt-empty">No vendors on this page yet.</p>
+      ) : (
+        <>
+          <p className="vt-panel-hint">
+            Share of {list.length} vendor{list.length === 1 ? "" : "s"} that have completed each task.
+          </p>
+          <ul className="vt-ig-funnel">
+            {rows.map((r) => {
+              const pct = r.total ? Math.round((r.done / r.total) * 100) : 0;
+              return (
+                <li key={r.name} className="vt-ig-funnel-row">
+                  <span className="vt-ig-funnel-name" title={r.name}>{r.name}</span>
+                  <span className="vt-ig-funnel-track">
+                    <span className="vt-ig-funnel-fill" style={{ width: `${pct}%` }} />
+                  </span>
+                  <span className="vt-ig-funnel-val">{r.done}/{r.total}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+// Stacked monthly columns of registrations, split by page type.
+function ColumnChart({ data }) {
+  const max = Math.max(1, ...data.map((d) => d.standard + d.sei));
+  const anyData = data.some((d) => d.standard + d.sei > 0);
+  return (
+    <div className="vt-ig-cols">
+      {!anyData && <p className="vt-empty vt-ig-cols-empty">No registrations in this window.</p>}
+      {data.map((d) => {
+        const total = d.standard + d.sei;
+        return (
+          <div key={d.key} className="vt-ig-col">
+            <div className="vt-ig-col-stack">
+              {total > 0 && <span className="vt-ig-col-total">{total}</span>}
+              <div className="vt-ig-col-bars">
+                {d.sei > 0 && (
+                  <span className="vt-ig-col-seg"
+                    style={{ height: `${(d.sei / max) * 100}%`, background: "var(--sei)" }}
+                    title={`SEI registration: ${d.sei}`} />
+                )}
+                {d.standard > 0 && (
+                  <span className="vt-ig-col-seg"
+                    style={{ height: `${(d.standard / max) * 100}%`, background: "var(--accent)" }}
+                    title={`Vendors: ${d.standard}`} />
+                )}
+              </div>
+            </div>
+            <span className="vt-ig-col-label">{d.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Horizontal stacked bars of who registered vendors, split by page type.
+function OwnerBars({ owners }) {
+  const max = Math.max(1, ...owners.map((o) => o.total));
+  return (
+    <ul className="vt-ig-owners">
+      {owners.map((o) => (
+        <li key={o.who} className="vt-ig-owner-row">
+          <span className="vt-ig-owner-name" title={o.who}>{o.who}</span>
+          <span className="vt-ig-owner-track">
+            {o.standard > 0 && (
+              <span className="vt-ig-owner-seg"
+                style={{ width: `${(o.standard / max) * 100}%`, background: "var(--accent)" }}
+                title={`Vendors: ${o.standard}`} />
+            )}
+            {o.sei > 0 && (
+              <span className="vt-ig-owner-seg"
+                style={{ width: `${(o.sei / max) * 100}%`, background: "var(--sei)" }}
+                title={`SEI registration: ${o.sei}`} />
+            )}
+          </span>
+          <span className="vt-ig-owner-val">{o.total}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/* ================================================================== */
 /*  STYLES                                                             */
 /* ================================================================== */
 const css = `
@@ -1003,6 +1372,7 @@ const css = `
 .vt-root{
   --bg:#FFFFFF; --surface:#FFFFFF; --ink:#141C29; --muted:#647089;
   --line:#E1E6EF; --accent:#000080; --accent-soft:#E6E6F2;
+  --sei:#4C6FE0;
   --todo:#98A2B6; --active:#E39A26; --done:#2E9E6B;
   --active-soft:#FBF1DE; --done-soft:#E4F4EC; --todo-soft:#EEF1F6;
   font-family:'Inter',system-ui,sans-serif; color:var(--ink);
@@ -1165,10 +1535,70 @@ const css = `
 .vt-config-text{font-size:14px; line-height:1.5; color:var(--muted);}
 .vt-config-text code{background:#F2F5FA; border-radius:5px; padding:1px 5px; font-size:12.5px; color:var(--ink);}
 
+/* ---- Insights / infographics page ---- */
+.vt-stats-4{grid-template-columns:repeat(4,1fr);}
+.vt-ig-row{display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; margin-bottom:18px;}
+.vt-ig-block{margin-bottom:18px;}
+
+.vt-ig-legend{display:flex; flex-wrap:wrap; gap:14px; margin-top:14px;}
+.vt-ig-legend-item{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--muted);}
+.vt-ig-swatch{width:11px; height:11px; border-radius:3px; display:inline-block; flex:0 0 auto;}
+
+/* doughnut */
+.vt-ig-donut{display:flex; align-items:center; gap:20px; flex-wrap:wrap; margin-top:8px;}
+.vt-ig-donut-svg{width:150px; height:150px; flex:0 0 auto;}
+.vt-ig-donut-num{font-family:'Space Grotesk',sans-serif; font-size:30px; font-weight:700; fill:var(--ink);}
+.vt-ig-donut-lbl{font-size:11px; fill:var(--muted);}
+.vt-ig-donut-legend{display:flex; flex-direction:column; gap:9px; min-width:150px; flex:1;}
+.vt-ig-dl-row{display:flex; align-items:center; gap:9px; font-size:13px;}
+.vt-ig-dl-label{color:var(--ink); flex:1;}
+.vt-ig-dl-val{font-family:'Space Grotesk',sans-serif; font-weight:600; color:var(--muted);}
+
+/* per-page status stacks */
+.vt-ig-barset{display:flex; flex-direction:column; gap:16px; margin-top:8px;}
+.vt-ig-stack{display:flex; flex-direction:column; gap:7px;}
+.vt-ig-stack-top{display:flex; justify-content:space-between; align-items:baseline;}
+.vt-ig-stack-label{font-size:13.5px; font-weight:600;}
+.vt-ig-stack-count{font-size:12.5px; color:var(--muted);}
+.vt-ig-track{display:flex; height:16px; border-radius:6px; overflow:hidden; background:var(--todo-soft);}
+.vt-ig-seg{display:block; height:100%;}
+.vt-ig-track-empty{font-size:11.5px; color:var(--muted); padding:0 8px; line-height:16px;}
+
+/* task funnel */
+.vt-ig-funnel{list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:11px;}
+.vt-ig-funnel-row{display:grid; grid-template-columns:1fr 96px auto; gap:12px; align-items:center;}
+.vt-ig-funnel-name{font-size:13px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.vt-ig-funnel-track{height:9px; border-radius:99px; background:var(--line); overflow:hidden;}
+.vt-ig-funnel-fill{display:block; height:100%; border-radius:99px; background:var(--accent);}
+.vt-ig-funnel-val{font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap;}
+
+/* monthly column chart */
+.vt-ig-cols{position:relative; display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin-top:12px; min-height:160px;}
+.vt-ig-cols-empty{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; margin:0;}
+.vt-ig-col{flex:1; display:flex; flex-direction:column; align-items:center; gap:8px;}
+.vt-ig-col-stack{width:100%; height:150px; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; gap:4px;}
+.vt-ig-col-total{font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:600; color:var(--muted);}
+.vt-ig-col-bars{width:100%; max-width:46px; height:100%; display:flex; flex-direction:column; justify-content:flex-end; border-radius:6px 6px 0 0; overflow:hidden;}
+.vt-ig-col-seg{display:block; width:100%; min-height:3px;}
+.vt-ig-col-label{font-size:12px; color:var(--muted);}
+
+/* owner bars */
+.vt-ig-owners{list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:12px;}
+.vt-ig-owner-row{display:grid; grid-template-columns:150px 1fr auto; gap:12px; align-items:center;}
+.vt-ig-owner-name{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.vt-ig-owner-track{display:flex; height:14px; border-radius:6px; overflow:hidden; background:var(--todo-soft);}
+.vt-ig-owner-seg{display:block; height:100%; min-width:3px;}
+.vt-ig-owner-val{font-family:'Space Grotesk',sans-serif; font-size:12.5px; font-weight:600; color:var(--muted);}
+
 @media (max-width:720px){
   .vt-columns{grid-template-columns:1fr;}
   .vt-info{grid-template-columns:1fr 1fr;}
   .vt-stats{grid-template-columns:1fr;}
+  .vt-stats-4{grid-template-columns:1fr 1fr;}
+  .vt-ig-row{grid-template-columns:1fr;}
+  .vt-ig-donut{justify-content:center;}
+  .vt-ig-owner-row{grid-template-columns:110px 1fr auto;}
+  .vt-ig-funnel-row{grid-template-columns:1fr 72px auto;}
   .vt-list-head{display:none;}
   .vt-row{grid-template-columns:1fr auto; gap:8px 12px; padding-right:34px;}
   .vt-cell-owner{grid-column:1 / -1; font-size:12.5px; color:var(--muted);}
