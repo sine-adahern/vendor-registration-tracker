@@ -349,7 +349,8 @@ function Dashboard({ session }) {
   const stats = useMemo(() => {
     const total = pageVendors.length;
     const complete = pageVendors.filter((v) => v.tasks.length && progress(v) === v.tasks.length).length;
-    return { total, complete, inProgress: total - complete };
+    const issues = pageVendors.filter((v) => v.flagged).length;
+    return { total, complete, inProgress: total - complete, issues };
   }, [pageVendors]);
 
   const registerVendor = async () => {
@@ -572,10 +573,11 @@ function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setSh
         </button>
       </div>
 
-      <div className="vt-stats">
+      <div className="vt-stats vt-stats-4">
         <Stat n={stats.total} label="Total vendors" tone="ink" />
         <Stat n={stats.inProgress} label="In progress" tone="active" />
         <Stat n={stats.complete} label="Complete" tone="done" />
+        <Stat n={stats.issues} label="Issues / problems" tone="flag" />
       </div>
 
       {showForm && (
@@ -1481,6 +1483,7 @@ const css = `
 .vt-tone-text-ink{color:var(--ink);}
 .vt-tone-text-active{color:var(--active);}
 .vt-tone-text-done{color:var(--done);}
+.vt-tone-text-flag{color:#B4560A;}
 
 .vt-form-card{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:24px;}
 .vt-form-fields{display:flex; gap:16px; flex-wrap:wrap;}
