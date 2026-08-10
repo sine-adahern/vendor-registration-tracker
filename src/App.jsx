@@ -353,6 +353,20 @@ function Dashboard({ session }) {
     return { total, complete, inProgress: total - complete, issues };
   }, [pageVendors]);
 
+  // One folder per vendor on the current page, holding every file uploaded to
+  // any of that vendor's tasks. Drives the side "Files" drawer.
+  const fileFolders = useMemo(
+    () =>
+      pageVendors.map((v) => ({
+        id: v.id,
+        name: v.name,
+        files: v.tasks.flatMap((t) =>
+          (t.task_files || []).map((f) => ({ id: f.id, name: f.name, path: f.path, task: t.name }))
+        ),
+      })),
+    [pageVendors]
+  );
+
   const registerVendor = async () => {
     const name = draftName.trim();
     if (!name) return;
@@ -534,6 +548,14 @@ function Dashboard({ session }) {
           />
         )}
       </main>
+
+      {(page === "standard" || page === "sei") && !loading && !loadError && (
+        <FilesDrawer
+          pageLabel={PAGES[page].title}
+          folders={fileFolders}
+          onOpenFile={openFile}
+        />
+      )}
     </Root>
   );
 }
@@ -640,6 +662,113 @@ function Stat({ n, label, tone }) {
       <span className={`vt-stat-n vt-tone-text-${tone}`}>{n}</span>
       <span className="vt-stat-label">{label}</span>
     </div>
+  );
+}
+
+/* ================================================================== */
+/*  FILES DRAWER                                                       */
+/*  A side tab that slides out a file browser for the current page,    */
+/*  organised into one folder per vendor/item. Files open via the      */
+/*  page's own signed-URL opener. Reads already-loaded data — no       */
+/*  extra fetching.                                                    */
+/* ================================================================== */
+function FilesDrawer({ pageLabel, folders, onOpenFile, note }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(() => new Set());
+
+  const totalFiles = folders.reduce((n, f) => n + f.files.length, 0);
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? folders.filter(
+        (f) =>
+          f.name.toLowerCase().includes(q) ||
+          f.files.some((file) => file.name.toLowerCase().includes(q))
+      )
+    : folders;
+
+  const toggleFolder = (id) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+
+  return (
+    <>
+      <button
+        className={`vt-files-tab ${open ? "vt-files-tab-hidden" : ""}`}
+        onClick={() => setOpen(true)}
+        aria-expanded={open}
+        aria-label="Open files"
+      >
+        <span className="vt-files-tab-ico" aria-hidden>📁</span>
+        <span className="vt-files-tab-label">Files</span>
+        {totalFiles > 0 && <span className="vt-files-tab-count">{totalFiles}</span>}
+      </button>
+
+      {open && <div className="vt-files-backdrop" onClick={() => setOpen(false)} aria-hidden />}
+
+      <aside className={`vt-files-drawer ${open ? "vt-files-drawer-open" : ""}`} aria-hidden={!open}>
+        <div className="vt-files-drawer-head">
+          <div>
+            <h2 className="vt-h2">Files</h2>
+            <p className="vt-files-sub">{pageLabel} · {folders.length} folders · {totalFiles} files</p>
+          </div>
+          <button className="vt-files-close" onClick={() => setOpen(false)} aria-label="Close files">×</button>
+        </div>
+
+        <div className="vt-files-search">
+          <input
+            placeholder="Search folders or files…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+
+        {note && <p className="vt-files-note">{note}</p>}
+
+        <div className="vt-files-list">
+          {folders.length === 0 && <p className="vt-empty">No folders yet.</p>}
+          {folders.length > 0 && shown.length === 0 && (
+            <p className="vt-empty">Nothing matches “{query}”.</p>
+          )}
+          {shown.map((folder) => {
+            const isOpen = expanded.has(folder.id);
+            return (
+              <div key={folder.id} className="vt-folder">
+                <button
+                  className="vt-folder-head"
+                  onClick={() => toggleFolder(folder.id)}
+                  aria-expanded={isOpen}
+                >
+                  <span className="vt-folder-caret" aria-hidden>{isOpen ? "▾" : "▸"}</span>
+                  <span className="vt-folder-ico" aria-hidden>{folder.files.length ? "📂" : "📁"}</span>
+                  <span className="vt-folder-name">{folder.name}</span>
+                  <span className="vt-folder-count">{folder.files.length}</span>
+                </button>
+                {isOpen && (
+                  <div className="vt-folder-files">
+                    {folder.files.length === 0 && <p className="vt-folder-empty">No files yet.</p>}
+                    {folder.files.map((file) => (
+                      <button
+                        key={file.id}
+                        className="vt-folder-file"
+                        onClick={() => onOpenFile(file.path)}
+                        title={file.task ? `From task: ${file.task}` : undefined}
+                      >
+                        <span className="vt-folder-file-ico" aria-hidden>▤</span>
+                        <span className="vt-folder-file-name">{file.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </aside>
+    </>
   );
 }
 
@@ -819,6 +948,14 @@ function ItemsSection({ me, page, onSwitch }) {
     return { total, candidates, sourced };
   }, [items]);
 
+  // One folder per item. Items don't support file uploads in the current data
+  // model, so these folders are present (for a consistent Files tab across all
+  // pages) but empty until item-level uploads exist.
+  const fileFolders = useMemo(
+    () => items.map((it) => ({ id: it.id, name: it.name, files: [] })),
+    [items]
+  );
+
   const addItem = async () => {
     const name = draftName.trim();
     if (!name) return;
@@ -902,18 +1039,26 @@ function ItemsSection({ me, page, onSwitch }) {
 
   if (selected)
     return (
-      <ItemDetailView
-        item={selected}
-        onBack={() => setSelectedId(null)}
-        onDelete={deleteItem}
-        onUpdateFieldLocal={updateItemFieldLocal}
-        onPersistField={persistItemField}
-        onAddVendor={addVendor}
-        onSetVendorState={setVendorState}
-        onRemoveVendor={removeVendor}
-        commentDraft={commentDraft} setCommentDraft={setCommentDraft}
-        onAddComment={addComment}
-      />
+      <>
+        <ItemDetailView
+          item={selected}
+          onBack={() => setSelectedId(null)}
+          onDelete={deleteItem}
+          onUpdateFieldLocal={updateItemFieldLocal}
+          onPersistField={persistItemField}
+          onAddVendor={addVendor}
+          onSetVendorState={setVendorState}
+          onRemoveVendor={removeVendor}
+          commentDraft={commentDraft} setCommentDraft={setCommentDraft}
+          onAddComment={addComment}
+        />
+        <FilesDrawer
+          pageLabel="New items"
+          folders={fileFolders}
+          onOpenFile={() => {}}
+          note="Items don't have file uploads yet, so these folders are empty."
+        />
+      </>
     );
 
   return (
@@ -925,6 +1070,12 @@ function ItemsSection({ me, page, onSwitch }) {
         showForm={showForm} setShowForm={setShowForm}
         draftName={draftName} setDraftName={setDraftName}
         onAdd={addItem}
+      />
+      <FilesDrawer
+        pageLabel="New items"
+        folders={fileFolders}
+        onOpenFile={() => {}}
+        note="Items don't have file uploads yet, so these folders are empty."
       />
     </>
   );
@@ -1476,6 +1627,43 @@ const css = `
 .vt-tone-flag{background:#B4560A;}
 .vt-flag-badge{display:inline-flex; align-items:center; gap:4px; margin-left:8px; font-family:'Inter',sans-serif; font-size:11px; font-weight:600; letter-spacing:.02em; color:#B4560A; background:#FCF3E8; border:1px solid #ECD3B8; border-radius:99px; padding:2px 8px; vertical-align:middle;}
 
+/* Files side tab + drawer */
+.vt-files-tab{position:fixed; right:0; top:50%; transform:translateY(-50%); z-index:40; display:flex; flex-direction:column; align-items:center; gap:8px; background:var(--accent); color:#fff; border:none; border-radius:12px 0 0 12px; padding:16px 9px; cursor:pointer; box-shadow:-2px 2px 12px rgba(20,28,41,.18); transition:padding .12s, background .15s;}
+.vt-files-tab:hover{background:#0000A6; padding-right:13px;}
+.vt-files-tab:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+.vt-files-tab-hidden{display:none;}
+.vt-files-tab-ico{font-size:17px; line-height:1;}
+.vt-files-tab-label{writing-mode:vertical-rl; text-orientation:mixed; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:13px; letter-spacing:.04em;}
+.vt-files-tab-count{background:#fff; color:var(--accent); font-size:11px; font-weight:700; border-radius:99px; padding:1px 6px; line-height:1.5;}
+
+.vt-files-backdrop{position:fixed; inset:0; background:rgba(20,28,41,.35); z-index:45;}
+.vt-files-drawer{position:fixed; top:0; right:0; height:100vh; width:390px; max-width:88vw; background:var(--surface); border-left:1px solid var(--line); box-shadow:-8px 0 28px rgba(20,28,41,.14); z-index:50; transform:translateX(100%); transition:transform .22s ease; display:flex; flex-direction:column;}
+.vt-files-drawer-open{transform:translateX(0);}
+.vt-files-drawer-head{display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:20px 20px 14px; border-bottom:1px solid var(--line);}
+.vt-files-sub{font-size:12.5px; color:var(--muted); margin:6px 0 0;}
+.vt-files-close{background:none; border:none; font-size:24px; line-height:1; color:var(--muted); cursor:pointer; padding:0 4px;}
+.vt-files-close:hover{color:var(--ink);}
+.vt-files-search{padding:14px 20px 6px;}
+.vt-files-search input{width:100%; font:inherit; font-size:14px; color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:9px 12px; background:#FAFBFD;}
+.vt-files-search input:focus{outline:2px solid var(--accent-soft); border-color:var(--accent); background:var(--surface);}
+.vt-files-note{font-size:12.5px; color:var(--muted); margin:2px 20px 0; padding:8px 10px; background:#F7F9FC; border:1px solid var(--line); border-radius:8px;}
+.vt-files-list{flex:1; overflow-y:auto; padding:10px 12px 24px;}
+
+.vt-folder{border-bottom:1px solid var(--line);}
+.vt-folder:last-child{border-bottom:none;}
+.vt-folder-head{display:flex; align-items:center; gap:9px; width:100%; text-align:left; background:none; border:none; font:inherit; cursor:pointer; padding:11px 8px; border-radius:8px; transition:background .12s;}
+.vt-folder-head:hover{background:#F7F9FC;}
+.vt-folder-caret{color:var(--muted); font-size:12px; width:12px; flex:0 0 auto;}
+.vt-folder-ico{font-size:16px; flex:0 0 auto;}
+.vt-folder-name{flex:1; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:14px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.vt-folder-count{flex:0 0 auto; font-size:12px; font-weight:600; color:var(--muted); background:var(--line); border-radius:99px; min-width:22px; text-align:center; padding:1px 7px;}
+.vt-folder-files{display:flex; flex-direction:column; gap:2px; padding:2px 8px 10px 30px;}
+.vt-folder-empty{font-size:12.5px; color:var(--muted); margin:4px 0 6px;}
+.vt-folder-file{display:flex; align-items:center; gap:8px; width:100%; text-align:left; background:none; border:none; font:inherit; cursor:pointer; padding:7px 9px; border-radius:7px; transition:background .12s;}
+.vt-folder-file:hover{background:var(--accent-soft);}
+.vt-folder-file-ico{color:var(--muted); font-size:13px; flex:0 0 auto;}
+.vt-folder-file-name{font-size:13.5px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+
 .vt-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:24px;}
 .vt-stat{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:18px 20px; display:flex; flex-direction:column; gap:4px;}
 .vt-stat-n{font-family:'Space Grotesk',sans-serif; font-size:30px; font-weight:700; line-height:1;}
@@ -1658,6 +1846,7 @@ const css = `
   .vt-info{grid-template-columns:1fr 1fr;}
   .vt-stats{grid-template-columns:1fr;}
   .vt-stats-4{grid-template-columns:1fr 1fr;}
+  .vt-files-drawer{width:100vw; max-width:100vw;}
   .vt-ig-row{grid-template-columns:1fr;}
   .vt-ig-donut{justify-content:center;}
   .vt-ig-owner-row{grid-template-columns:110px 1fr auto;}
