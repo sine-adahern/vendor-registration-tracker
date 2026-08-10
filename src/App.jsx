@@ -384,6 +384,16 @@ function Dashboard({ session }) {
     if (error) alert("Could not save: " + error.message);
   };
 
+  // Flag / unflag a vendor as a problem or issue. Clearing the flag also wipes
+  // the reason so a later re-flag starts fresh. Updates local state first, then
+  // persists both fields; on failure we re-sync from the database.
+  const setVendorFlag = async (vendorId, flagged) => {
+    const patch = flagged ? { flagged: true } : { flagged: false, flag_reason: "" };
+    setVendors((prev) => prev.map((v) => (v.id === vendorId ? { ...v, ...patch } : v)));
+    const { error } = await supabase.from("vendors").update(patch).eq("id", vendorId);
+    if (error) { alert("Could not update flag: " + error.message); loadVendors(); }
+  };
+
   const addComment = async (vendorId, body) => {
     const text = body.trim();
     if (!text) return;
@@ -515,6 +525,7 @@ function Dashboard({ session }) {
             onDelete={deleteVendor}
             onUpdateFieldLocal={updateFieldLocal}
             onPersistField={persistField}
+            onSetFlag={setVendorFlag}
             onSetStatus={setTaskStatus}
             onAddFiles={addFiles} onRemoveFile={removeFile} onOpenFile={openFile}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
@@ -597,8 +608,13 @@ function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setSh
           const total = taskCount(v);
           return (
             <button key={v.id} className="vt-row" onClick={() => onOpen(v.id)}>
-              <span className={`vt-spine vt-tone-${t}`} aria-hidden />
-              <span className="vt-cell-vendor"><span className="vt-vendor-name">{v.name}</span></span>
+              <span className={`vt-spine ${v.flagged ? "vt-tone-flag" : `vt-tone-${t}`}`} aria-hidden />
+              <span className="vt-cell-vendor">
+                <span className="vt-vendor-name">
+                  {v.name}
+                  {v.flagged && <span className="vt-flag-badge" title={v.flag_reason || "Flagged as an issue"}>⚑ Issue</span>}
+                </span>
+              </span>
               <span className="vt-cell-owner">{v.added_by || "—"}</span>
               <span className="vt-cell-progress">
                 <span className="vt-bar">
@@ -628,7 +644,7 @@ function Stat({ n, label, tone }) {
 /* ================================================================== */
 /*  DETAIL VIEW                                                        */
 /* ================================================================== */
-function DetailView({ vendor, onBack, onDelete, onUpdateFieldLocal, onPersistField, onSetStatus, onAddFiles, onRemoveFile, onOpenFile, commentDraft, setCommentDraft, onAddComment }) {
+function DetailView({ vendor, onBack, onDelete, onUpdateFieldLocal, onPersistField, onSetFlag, onSetStatus, onAddFiles, onRemoveFile, onOpenFile, commentDraft, setCommentDraft, onAddComment }) {
   const done = progress(vendor);
   const total = taskCount(vendor);
   const t = tone(vendor);
@@ -644,8 +660,34 @@ function DetailView({ vendor, onBack, onDelete, onUpdateFieldLocal, onPersistFie
     <>
       <div className="vt-detail-topbar">
         <button className="vt-back" onClick={onBack}>‹ All vendors</button>
-        <button className="vt-btn vt-btn-danger" onClick={() => onDelete(vendor.id)}>Delete vendor</button>
+        <div className="vt-detail-actions">
+          <button
+            className={`vt-btn ${vendor.flagged ? "vt-btn-flag-on" : "vt-btn-flag"}`}
+            onClick={() => onSetFlag(vendor.id, !vendor.flagged)}
+            aria-pressed={!!vendor.flagged}
+          >
+            {vendor.flagged ? "⚑ Clear flag" : "⚑ Flag as issue"}
+          </button>
+          <button className="vt-btn vt-btn-danger" onClick={() => onDelete(vendor.id)}>Delete vendor</button>
+        </div>
       </div>
+
+      {vendor.flagged && (
+        <div className="vt-flag-banner" role="status">
+          <span className="vt-flag-mark" aria-hidden>⚑</span>
+          <div className="vt-flag-body">
+            <span className="vt-flag-title">Flagged as a problem / issue</span>
+            <textarea
+              className="vt-flag-reason"
+              rows={2}
+              placeholder="Describe the problem (optional) — e.g. missing bank details, unresponsive contact…"
+              value={vendor.flag_reason || ""}
+              onChange={(e) => onUpdateFieldLocal(vendor.id, "flag_reason", e.target.value)}
+              onBlur={(e) => onPersistField(vendor.id, "flag_reason", e.target.value)}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="vt-detail-head">
         <div>
@@ -1413,6 +1455,24 @@ const css = `
 .vt-btn-danger{background:var(--surface); color:#c0392b; border:1px solid #e6c3bf;}
 .vt-btn-danger:hover{background:#fbeceb; border-color:#c0392b;}
 .vt-btn:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+/* Flag as problem / issue */
+.vt-detail-actions{display:flex; align-items:center; gap:10px;}
+.vt-btn-flag{background:var(--surface); color:#B4560A; border:1px solid #ECD3B8;}
+.vt-btn-flag:hover{background:#FCF3E8; border-color:#B4560A;}
+.vt-btn-flag-on{background:#B4560A; color:#fff; border:1px solid #B4560A;}
+.vt-btn-flag-on:hover{background:#9A4708;}
+
+.vt-flag-banner{display:flex; gap:12px; align-items:flex-start; background:#FCF3E8; border:1px solid #ECD3B8; border-left:4px solid #B4560A; border-radius:12px; padding:14px 16px; margin-bottom:18px;}
+.vt-flag-mark{color:#B4560A; font-size:18px; line-height:1.4; flex:0 0 auto;}
+.vt-flag-body{display:flex; flex-direction:column; gap:8px; flex:1;}
+.vt-flag-title{font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:14px; color:#8A430A;}
+.vt-flag-reason{font:inherit; font-size:14px; color:var(--ink); border:1px solid #ECD3B8; border-radius:8px; padding:8px 10px; background:var(--surface); resize:vertical;}
+.vt-flag-reason:focus{outline:2px solid #F0D6B6; border-color:#B4560A;}
+.vt-flag-reason::placeholder{color:#B9A98F;}
+
+.vt-tone-flag{background:#B4560A;}
+.vt-flag-badge{display:inline-flex; align-items:center; gap:4px; margin-left:8px; font-family:'Inter',sans-serif; font-size:11px; font-weight:600; letter-spacing:.02em; color:#B4560A; background:#FCF3E8; border:1px solid #ECD3B8; border-radius:99px; padding:2px 8px; vertical-align:middle;}
 
 .vt-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:24px;}
 .vt-stat{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:18px 20px; display:flex; flex-direction:column; gap:4px;}
