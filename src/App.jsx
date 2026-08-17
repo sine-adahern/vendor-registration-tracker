@@ -92,6 +92,34 @@ const tone = (v) => {
   return "active";
 };
 
+/* ---- Vendor list ordering ---------------------------------------- *
+ * The list is ordered by completeness. Three buckets, top to bottom:  *
+ *   0) partially started — anything not complete and not flagged,     *
+ *      i.e. in-progress AND not-yet-started vendors                    *
+ *   1) error            — vendors flagged as an issue (regardless of   *
+ *      how many tasks are done)                                        *
+ *   2) completed        — every task done                             *
+ * Within a bucket, vendors are ordered by level of completeness        *
+ * (fraction of tasks done), least-done first so the whole list runs    *
+ * from least to most complete top-to-bottom. Vendors at the same       *
+ * level of completeness are ordered alphabetically by name.            */
+const completeness = (v) => {
+  const total = v.tasks.length;
+  return total ? progress(v) / total : 0;
+};
+const vendorBucket = (v) => {
+  if (v.flagged) return 1;                                   // error
+  if (v.tasks.length && progress(v) === v.tasks.length) return 2; // completed
+  return 0;                                                  // partially started
+};
+const byCompleteness = (a, b) => {
+  const bucketDiff = vendorBucket(a) - vendorBucket(b);
+  if (bucketDiff !== 0) return bucketDiff;
+  const compDiff = completeness(a) - completeness(b);
+  if (compDiff !== 0) return compDiff;
+  return (a.name || "").localeCompare(b.name || "");
+};
+
 /* ---- Insights helpers -------------------------------------------- *
  * Aggregations for the infographics page. They only ever look at the  *
  * vendor records (both "standard" and "sei" registration types), so   *
@@ -584,6 +612,7 @@ function PageNav({ page, onSwitch }) {
 /*  LIST VIEW                                                          */
 /* ================================================================== */
 function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setShowForm, draftName, setDraftName, onRegister }) {
+  const orderedVendors = useMemo(() => [...vendors].sort(byCompleteness), [vendors]);
   return (
     <>
       <div className="vt-head-row">
@@ -625,8 +654,8 @@ function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setSh
         <div className="vt-list-head">
           <span>Vendor</span><span>Added by</span><span>Progress</span><span>Last activity</span>
         </div>
-        {vendors.length === 0 && <p className="vt-empty vt-list-empty">No vendors yet. Register your first one above.</p>}
-        {vendors.map((v) => {
+        {orderedVendors.length === 0 && <p className="vt-empty vt-list-empty">No vendors yet. Register your first one above.</p>}
+        {orderedVendors.map((v) => {
           const t = tone(v);
           const done = progress(v);
           const total = taskCount(v);
