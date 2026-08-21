@@ -337,10 +337,10 @@ function Login() {
 /*  ADMIN PANEL (create / list / delete login accounts)               */
 /* ================================================================== */
 
-// Endpoint backed by netlify/functions/admin-users.mjs. All privileged
-// work happens there with the service-role key; the browser only ever
-// holds the caller's own login token.
-const ADMIN_ENDPOINT = "/.netlify/functions/admin-users";
+// Endpoint backed by the serverless function at api/admin-users.js. All
+// privileged work happens there with the service-role key; the browser only
+// ever holds the caller's own login token.
+const ADMIN_ENDPOINT = "/api/admin-users";
 
 // Call the admin endpoint with a FRESH access token. We fetch the current
 // session each time (rather than trusting a token captured at mount) so a
