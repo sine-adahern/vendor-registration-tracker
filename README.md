@@ -15,7 +15,7 @@ npm install      # install dependencies
 npm run dev      # start the dev server (prints a localhost URL)
 ```
 
-To preview a production build locally:
+To preview a production build locally
 
 ```bash
 npm run build    # outputs to dist/
