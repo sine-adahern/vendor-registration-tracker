@@ -5,3 +5,6 @@ dist
 .env
 .env.*
 npm-debug.log*
+
+# ...but do track the example template
+!.env.example
