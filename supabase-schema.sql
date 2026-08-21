@@ -102,3 +102,28 @@ create policy "authenticated upload files" on storage.objects
   for insert to authenticated with check (bucket_id = 'vendor-files');
 create policy "authenticated delete files" on storage.objects
   for delete to authenticated using (bucket_id = 'vendor-files');
+
+-- =========================================================
+-- User administration (admin panel)
+-- =========================================================
+-- Account creation is done from the in-app Admin panel, which calls a
+-- serverless function that uses the SERVICE-ROLE key. Admin status is stored
+-- in each user's app_metadata (only the service role can write it, so users
+-- cannot promote themselves).
+--
+-- There must be a FIRST admin, created outside the app. After a user has
+-- signed in at least once (so the row exists), promote them by email:
+--
+--   update auth.users
+--   set raw_app_meta_data =
+--         coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb
+--   where email = 'you@company.com';
+--
+-- That user must sign out and back in for the new token to carry the role.
+-- From then on they can create everyone else from the Admin panel.
+--
+-- To revoke admin from someone:
+--
+--   update auth.users
+--   set raw_app_meta_data = raw_app_meta_data || '{"role":"user"}'::jsonb
+--   where email = 'someone@company.com';
