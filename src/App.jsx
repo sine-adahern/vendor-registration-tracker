@@ -279,23 +279,20 @@ function ConfigNeeded() {
 /*  LOGIN                                                              */
 /* ================================================================== */
 function Login() {
-  const [mode, setMode] = useState("signin");
+  // Sign-in only. New accounts are created by an admin from the in-app
+  // admin panel (see AdminPage) — there is no public self-service sign-up.
+  // For defence in depth, also turn OFF open sign-ups in Supabase
+  // (Authentication → Providers/Settings). See the README.
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
-  const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
-    setErr(""); setInfo(""); setBusy(true);
-    const { error } =
-      mode === "signin"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
+    setErr(""); setBusy(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     setBusy(false);
     if (error) { setErr(error.message); return; }
-    if (mode === "signup")
-      setInfo("Account created. If email confirmation is on, check your inbox, then sign in.");
   };
 
   return (
@@ -305,32 +302,30 @@ function Login() {
           <div className="vt-brand vt-brand-center">
             <span className="vt-wordmark">onboarding tracker</span>
           </div>
-          <h1 className="vt-auth-title">{mode === "signin" ? "Sign in" : "Create account"}</h1>
+          <h1 className="vt-auth-title">Sign in</h1>
 
           <label className="vt-field">
             <span>Email</span>
             <input type="email" value={email} placeholder="you@company.com"
+              autoComplete="username"
               onChange={(e) => setEmail(e.target.value)} />
           </label>
           <label className="vt-field vt-field-gap">
             <span>Password</span>
             <input type="password" value={password} placeholder="••••••••"
+              autoComplete="current-password"
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submit()} />
           </label>
 
           {err && <p className="vt-auth-err">{err}</p>}
-          {info && <p className="vt-auth-info">{info}</p>}
 
           <button className="vt-btn vt-btn-primary vt-btn-block" onClick={submit} disabled={busy}>
-            {busy ? "…" : mode === "signin" ? "Sign in" : "Sign up"}
+            {busy ? "…" : "Sign in"}
           </button>
 
-          <p className="vt-auth-switch">
-            {mode === "signin" ? "No account yet? " : "Already have an account? "}
-            <button onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setErr(""); setInfo(""); }}>
-              {mode === "signin" ? "Create one" : "Sign in"}
-            </button>
+          <p className="vt-auth-switch vt-auth-note">
+            Need an account? Ask an administrator to create one for you.
           </p>
         </div>
       </div>
@@ -339,10 +334,221 @@ function Login() {
 }
 
 /* ================================================================== */
+/*  ADMIN PANEL (create / list / delete login accounts)               */
+/* ================================================================== */
+
+// Endpoint backed by netlify/functions/admin-users.mjs. All privileged
+// work happens there with the service-role key; the browser only ever
+// holds the caller's own login token.
+const ADMIN_ENDPOINT = "/.netlify/functions/admin-users";
+
+// Call the admin endpoint with a FRESH access token. We fetch the current
+// session each time (rather than trusting a token captured at mount) so a
+// refreshed token is always used. The token proves who the caller is; the
+// server decides what they're allowed to do.
+async function adminFetch(method, body) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session && data.session.access_token;
+  if (!token) throw new Error("Your session has expired. Please sign in again.");
+
+  const res = await fetch(ADMIN_ENDPOINT, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  let payload = {};
+  try { payload = await res.json(); } catch { /* empty body */ }
+  if (!res.ok) throw new Error(payload.error || `Request failed (${res.status}).`);
+  return payload;
+}
+
+// A reasonably strong random password (used by the "Generate" button).
+function generatePassword(length = 16) {
+  const alphabet =
+    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*?";
+  const out = [];
+  const rnd = new Uint32Array(length);
+  crypto.getRandomValues(rnd);
+  for (let i = 0; i < length; i++) out.push(alphabet[rnd[i] % alphabet.length]);
+  return out.join("");
+}
+
+function AdminPage({ session, onClose }) {
+  const myId = session.user.id;
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState("");
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [makeAdmin, setMakeAdmin] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [formErr, setFormErr] = useState("");
+  const [formOk, setFormOk] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true); setLoadErr("");
+    try {
+      const { users } = await adminFetch("GET");
+      setUsers(users || []);
+    } catch (e) {
+      setLoadErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const createUser = async () => {
+    setFormErr(""); setFormOk("");
+    if (!email.trim()) { setFormErr("Enter an email address."); return; }
+    if (password.length < 12) { setFormErr("Password must be at least 12 characters."); return; }
+    setCreating(true);
+    try {
+      const { user } = await adminFetch("POST", {
+        email: email.trim(),
+        password,
+        makeAdmin,
+      });
+      setFormOk(
+        `Account created for ${user.email}. Share the password with them securely ` +
+        `and ask them to change it after first sign-in.`,
+      );
+      setEmail(""); setPassword(""); setMakeAdmin(false); setShowPw(false);
+      load();
+    } catch (e) {
+      setFormErr(e.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const deleteUser = async (u) => {
+    if (u.id === myId) return;
+    if (!window.confirm(`Delete the account for ${u.email}? This cannot be undone.`)) return;
+    try {
+      await adminFetch("DELETE", { id: u.id });
+      setUsers((prev) => prev.filter((x) => x.id !== u.id));
+    } catch (e) {
+      alert("Could not delete account: " + e.message);
+    }
+  };
+
+  return (
+    <div className="vt-admin-overlay" role="dialog" aria-modal="true" aria-label="User administration">
+      <div className="vt-admin-panel">
+        <div className="vt-admin-head">
+          <h2 className="vt-admin-title">User administration</h2>
+          <button className="vt-signout" onClick={onClose}>Close</button>
+        </div>
+
+        {/* Create account */}
+        <section className="vt-admin-section">
+          <h3 className="vt-admin-h3">Create an account</h3>
+          <div className="vt-admin-form">
+            <label className="vt-field">
+              <span>Email</span>
+              <input
+                type="email" value={email} placeholder="person@company.com"
+                autoComplete="off"
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </label>
+
+            <label className="vt-field vt-field-gap">
+              <span>Temporary password</span>
+              <div className="vt-admin-pw-row">
+                <input
+                  type={showPw ? "text" : "password"}
+                  value={password} placeholder="at least 12 characters"
+                  autoComplete="new-password"
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button type="button" className="vt-admin-mini" onClick={() => setShowPw((s) => !s)}>
+                  {showPw ? "Hide" : "Show"}
+                </button>
+                <button
+                  type="button" className="vt-admin-mini"
+                  onClick={() => { setPassword(generatePassword()); setShowPw(true); }}
+                >
+                  Generate
+                </button>
+              </div>
+            </label>
+
+            <label className="vt-admin-check">
+              <input
+                type="checkbox" checked={makeAdmin}
+                onChange={(e) => setMakeAdmin(e.target.checked)}
+              />
+              <span>Make this user an admin (can manage accounts)</span>
+            </label>
+
+            {formErr && <p className="vt-auth-err">{formErr}</p>}
+            {formOk && <p className="vt-auth-info">{formOk}</p>}
+
+            <button
+              className="vt-btn vt-btn-primary vt-btn-block"
+              onClick={createUser} disabled={creating}
+            >
+              {creating ? "Creating…" : "Create account"}
+            </button>
+          </div>
+        </section>
+
+        {/* Existing accounts */}
+        <section className="vt-admin-section">
+          <h3 className="vt-admin-h3">Existing accounts</h3>
+          {loading ? (
+            <p className="vt-loading">Loading…</p>
+          ) : loadErr ? (
+            <p className="vt-auth-err">{loadErr}</p>
+          ) : users.length === 0 ? (
+            <p className="vt-loading">No accounts yet.</p>
+          ) : (
+            <ul className="vt-admin-list">
+              {users.map((u) => (
+                <li key={u.id} className="vt-admin-user">
+                  <div className="vt-admin-user-main">
+                    <span className="vt-admin-user-email">{u.email}</span>
+                    {u.is_admin && <span className="vt-admin-badge">admin</span>}
+                    {u.id === myId && <span className="vt-admin-badge vt-admin-badge-you">you</span>}
+                  </div>
+                  <button
+                    className="vt-admin-mini vt-admin-danger"
+                    onClick={() => deleteUser(u)}
+                    disabled={u.id === myId}
+                    title={u.id === myId ? "You can't delete your own account" : "Delete account"}
+                  >
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== */
 /*  DASHBOARD (data layer)                                             */
 /* ================================================================== */
 function Dashboard({ session }) {
   const me = session.user.email;
+  // Admin status is read from app_metadata, which only the service role can
+  // set — a normal user can't flip this to promote themselves. This drives
+  // the UI only; the serverless endpoint re-checks admin status on every call.
+  const appMeta = session.user.app_metadata || {};
+  const isAdmin = appMeta.role === "admin" || appMeta.is_admin === true;
+  const [showAdmin, setShowAdmin] = useState(false);
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -525,9 +731,16 @@ function Dashboard({ session }) {
         </div>
         <div className="vt-me">
           <span className="vt-me-email">{me}</span>
+          {isAdmin && (
+            <button className="vt-signout" onClick={() => setShowAdmin(true)}>Admin</button>
+          )}
           <button className="vt-signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
         </div>
       </header>
+
+      {isAdmin && showAdmin && (
+        <AdminPage session={session} onClose={() => setShowAdmin(false)} />
+      )}
 
       <main className="vt-main">
         {page === "items" ? (
@@ -1894,4 +2107,32 @@ const css = `
   .vt-vendor-row .vt-select{grid-column:1 / -1; grid-row:3; width:100%;}
   .vt-vendor-x{grid-column:3; grid-row:1; justify-self:end;}
 }
+
+/* admin panel */
+.vt-auth-note{color:var(--muted);}
+.vt-admin-overlay{position:fixed; inset:0; background:rgba(20,22,26,0.55); display:flex;
+  align-items:flex-start; justify-content:center; padding:40px 16px; overflow-y:auto; z-index:50;}
+.vt-admin-panel{background:var(--surface); border:1px solid var(--line); border-radius:16px;
+  width:100%; max-width:560px; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,0.25);}
+.vt-admin-head{display:flex; align-items:center; justify-content:space-between; margin:0 0 8px;}
+.vt-admin-title{font-family:'Space Grotesk',sans-serif; font-size:19px; font-weight:700; margin:0;}
+.vt-admin-section{margin-top:20px; padding-top:20px; border-top:1px solid var(--line);}
+.vt-admin-h3{font-size:14px; font-weight:700; margin:0 0 12px;}
+.vt-admin-form{display:flex; flex-direction:column;}
+.vt-admin-pw-row{display:flex; gap:8px; align-items:stretch;}
+.vt-admin-pw-row input{flex:1;}
+.vt-admin-mini{font:inherit; font-size:12px; font-weight:600; color:var(--muted);
+  background:none; border:1px solid var(--line); border-radius:7px; padding:6px 10px; cursor:pointer;}
+.vt-admin-mini:hover{color:var(--accent); border-color:var(--accent);}
+.vt-admin-danger:hover{color:#c0392b; border-color:#c0392b;}
+.vt-admin-check{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); margin:12px 0;}
+.vt-admin-check input{width:auto;}
+.vt-admin-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px;}
+.vt-admin-user{display:flex; align-items:center; justify-content:space-between; gap:12px;
+  border:1px solid var(--line); border-radius:9px; padding:10px 12px;}
+.vt-admin-user-main{display:flex; align-items:center; gap:8px; min-width:0;}
+.vt-admin-user-email{font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.vt-admin-badge{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em;
+  color:var(--accent); background:rgba(0,0,0,0.04); border-radius:5px; padding:2px 6px;}
+.vt-admin-badge-you{color:var(--muted);}
 `;
