@@ -52,7 +52,7 @@ const ITEM_VENDOR_STATES = [
 ];
 const DEFAULT_STATE = ITEM_VENDOR_STATES[0].value;
 const stateMeta = (v) => ITEM_VENDOR_STATES.find((s) => s.value === v) || ITEM_VENDOR_STATES[4];
-const ITEM_SELECT = "*, item_vendors(*), item_comments(*)";
+const ITEM_SELECT = "*, item_vendors(*), item_comments(*), item_files(*)";
 
 // The setting-sheet task also accepts Excel; every other document task stays PDF/Word.
 const isSettingSheet = (task) => /setting sheet/i.test(task.name || "");
@@ -197,6 +197,9 @@ const normalizeItem = (it) => ({
     .slice()
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
   item_comments: (it.item_comments || [])
+    .slice()
+    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+  item_files: (it.item_files || [])
     .slice()
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
 });
@@ -1190,11 +1193,14 @@ function ItemsSection({ me, page, onSwitch }) {
     return { total, candidates, sourced };
   }, [items]);
 
-  // One folder per item. Items don't support file uploads in the current data
-  // model, so these folders are present (for a consistent Files tab across all
-  // pages) but empty until item-level uploads exist.
+  // One folder per item, listing the files uploaded to that item.
   const fileFolders = useMemo(
-    () => items.map((it) => ({ id: it.id, name: it.name, files: [] })),
+    () =>
+      items.map((it) => ({
+        id: it.id,
+        name: it.name,
+        files: it.item_files.map((f) => ({ id: f.id, name: f.name, path: f.path })),
+      })),
     [items]
   );
 
@@ -1213,11 +1219,17 @@ function ItemsSection({ me, page, onSwitch }) {
     const target = items.find((it) => it.id === itemId);
     if (!target) return;
     const ok = window.confirm(
-      `Delete "${target.name}"? This permanently removes its candidate vendors and notes. This cannot be undone.`
+      `Delete "${target.name}"? This permanently removes its candidate vendors, notes, and uploaded files. This cannot be undone.`
     );
     if (!ok) return;
     setItems((prev) => prev.filter((it) => it.id !== itemId));
     if (selectedId === itemId) setSelectedId(null);
+    // DB rows cascade, but the storage objects do not — remove them explicitly.
+    const paths = (target.item_files || []).map((f) => f.path);
+    if (paths.length) {
+      const { error: storageErr } = await supabase.storage.from("vendor-files").remove(paths);
+      if (storageErr) console.warn("Some item files may not have been removed:", storageErr.message);
+    }
     const { error } = await supabase.from("items").delete().eq("id", itemId);
     if (error) { alert("Could not delete item: " + error.message); loadItems(); }
   };
@@ -1276,6 +1288,40 @@ function ItemsSection({ me, page, onSwitch }) {
     setCommentDraft("");
   };
 
+  const addItemFiles = async (itemId, fileList) => {
+    const files = Array.from(fileList);
+    const added = [];
+    for (const file of files) {
+      const path = `items/${itemId}/${crypto.randomUUID()}-${file.name}`;
+      const { error: upErr } = await supabase.storage.from("vendor-files").upload(path, file);
+      if (upErr) { alert(`Upload failed for ${file.name}: ${upErr.message}`); continue; }
+      const { data: row, error: rowErr } = await supabase
+        .from("item_files").insert({ item_id: itemId, name: file.name, path }).select("*").single();
+      if (rowErr) { alert("Could not save file record: " + rowErr.message); continue; }
+      added.push(row);
+    }
+    if (added.length)
+      setItems((prev) =>
+        prev.map((it) => (it.id === itemId ? { ...it, item_files: [...it.item_files, ...added] } : it))
+      );
+  };
+
+  const removeItemFile = async (itemId, fileId, path) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId ? { ...it, item_files: it.item_files.filter((f) => f.id !== fileId) } : it
+      )
+    );
+    await supabase.storage.from("vendor-files").remove([path]);
+    await supabase.from("item_files").delete().eq("id", fileId);
+  };
+
+  const openItemFile = async (path) => {
+    const { data, error } = await supabase.storage.from("vendor-files").createSignedUrl(path, 3600);
+    if (error) { alert("Could not open file: " + error.message); return; }
+    if (data?.signedUrl) window.open(data.signedUrl, "_blank");
+  };
+
   if (loading) return (<><PageNav page={page} onSwitch={onSwitch} /><p className="vt-loading">Loading…</p></>);
   if (loadError) return (<><PageNav page={page} onSwitch={onSwitch} /><p className="vt-loading">Couldn't load items: {loadError}</p></>);
 
@@ -1293,12 +1339,12 @@ function ItemsSection({ me, page, onSwitch }) {
           onRemoveVendor={removeVendor}
           commentDraft={commentDraft} setCommentDraft={setCommentDraft}
           onAddComment={addComment}
+          onAddFiles={addItemFiles} onRemoveFile={removeItemFile} onOpenFile={openItemFile}
         />
         <FilesDrawer
           pageLabel="New items"
           folders={fileFolders}
-          onOpenFile={() => {}}
-          note="Items don't have file uploads yet, so these folders are empty."
+          onOpenFile={openItemFile}
         />
       </>
     );
@@ -1316,8 +1362,7 @@ function ItemsSection({ me, page, onSwitch }) {
       <FilesDrawer
         pageLabel="New items"
         folders={fileFolders}
-        onOpenFile={() => {}}
-        note="Items don't have file uploads yet, so these folders are empty."
+        onOpenFile={openItemFile}
       />
     </>
   );
@@ -1403,7 +1448,7 @@ function ItemsListView({ items, stats, me, onOpen, showForm, setShowForm, draftN
 /* ================================================================== */
 /*  NEW ITEMS — detail view (candidate vendors + notes)               */
 /* ================================================================== */
-function ItemDetailView({ item, onBack, onDelete, onUpdateFieldLocal, onPersistField, onAddVendor, onSetVendorState, onRemoveVendor, commentDraft, setCommentDraft, onAddComment }) {
+function ItemDetailView({ item, onBack, onDelete, onUpdateFieldLocal, onPersistField, onAddVendor, onSetVendorState, onRemoveVendor, commentDraft, setCommentDraft, onAddComment, onAddFiles, onRemoveFile, onOpenFile }) {
   const [vendorDraft, setVendorDraft] = useState("");
   const t = itemTone(item);
   const total = vendorCount(item);
@@ -1509,6 +1554,27 @@ function ItemDetailView({ item, onBack, onDelete, onUpdateFieldLocal, onPersistF
             <textarea placeholder="Add a note…" rows={2} value={commentDraft}
               onChange={(e) => setCommentDraft(e.target.value)} />
             <button className="vt-btn vt-btn-primary" onClick={() => onAddComment(item.id, commentDraft)}>Post</button>
+          </div>
+
+          <div className="vt-notes-files">
+            <h3 className="vt-notes-files-title">Files</h3>
+            {item.item_files.length === 0 && (
+              <p className="vt-empty">No files yet. Attach one below.</p>
+            )}
+            <div className="vt-files vt-files-block">
+              {item.item_files.map((f) => (
+                <span key={f.id} className="vt-file-chip">
+                  <span className="vt-file-ico" aria-hidden>▤</span>
+                  <button className="vt-file-link" onClick={() => onOpenFile(f.path)}>{f.name}</button>
+                  <button className="vt-file-x" onClick={() => onRemoveFile(item.id, f.id, f.path)} aria-label={`Remove ${f.name}`}>×</button>
+                </span>
+              ))}
+              <label className="vt-file-add">
+                + Add file
+                <input type="file" multiple
+                  onChange={(e) => { if (e.target.files.length) onAddFiles(item.id, e.target.files); e.target.value = ""; }} />
+              </label>
+            </div>
           </div>
         </section>
       </div>
@@ -1993,6 +2059,11 @@ const css = `
 .vt-add-inline input{flex:1; font:inherit; font-size:14px; color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:9px 12px; background:#FAFBFD;}
 .vt-add-inline input:focus{outline:2px solid var(--accent-soft); border-color:var(--accent); background:var(--surface);}
 .vt-add-inline .vt-btn{white-space:nowrap;}
+
+/* Files block inside the Notes panel (New items page) */
+.vt-notes-files{margin-top:16px; padding-top:16px; border-top:1px solid var(--line);}
+.vt-notes-files-title{font-family:'Space Grotesk',sans-serif; font-size:13px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin:0 0 4px;}
+.vt-files-block{margin-left:0;}
 
 .vt-files{display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 0 30px;}
 .vt-file-chip{display:inline-flex; align-items:center; gap:6px; background:#F2F5FA; border:1px solid var(--line); border-radius:8px; padding:5px 8px 5px 10px; font-size:12.5px;}
