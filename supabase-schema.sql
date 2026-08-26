@@ -42,6 +42,16 @@ create table if not exists task_files (
   created_at timestamptz not null default now()
 );
 
+-- Files attached to a New-items record (shown under its Notes section).
+-- Belongs with the New-items tables (items / item_vendors / item_comments).
+create table if not exists item_files (
+  id         uuid primary key default gen_random_uuid(),
+  item_id    uuid not null references items(id) on delete cascade,
+  name       text not null,           -- original filename
+  path       text not null,           -- object path inside the storage bucket
+  created_at timestamptz not null default now()
+);
+
 -- ---------- Auto-create the 7 standard tasks when a vendor is registered ----------
 create or replace function create_default_tasks()
 returns trigger
@@ -72,11 +82,13 @@ alter table vendors    enable row level security;
 alter table tasks      enable row level security;
 alter table comments   enable row level security;
 alter table task_files enable row level security;
+alter table item_files enable row level security;
 
 drop policy if exists "authenticated full access" on vendors;
 drop policy if exists "authenticated full access" on tasks;
 drop policy if exists "authenticated full access" on comments;
 drop policy if exists "authenticated full access" on task_files;
+drop policy if exists "authenticated full access" on item_files;
 
 create policy "authenticated full access" on vendors
   for all to authenticated using (true) with check (true);
@@ -85,6 +97,8 @@ create policy "authenticated full access" on tasks
 create policy "authenticated full access" on comments
   for all to authenticated using (true) with check (true);
 create policy "authenticated full access" on task_files
+  for all to authenticated using (true) with check (true);
+create policy "authenticated full access" on item_files
   for all to authenticated using (true) with check (true);
 
 -- ---------- Private storage bucket for uploaded documents ----------
