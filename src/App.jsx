@@ -828,7 +828,13 @@ function PageNav({ page, onSwitch }) {
 /*  LIST VIEW                                                          */
 /* ================================================================== */
 function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setShowForm, draftName, setDraftName, onRegister }) {
+  const [query, setQuery] = useState("");
   const orderedVendors = useMemo(() => [...vendors].sort(byCompleteness), [vendors]);
+  const q = query.trim().toLowerCase();
+  const shownVendors = useMemo(
+    () => (q ? orderedVendors.filter((v) => (v.name || "").toLowerCase().includes(q)) : orderedVendors),
+    [orderedVendors, q]
+  );
   return (
     <>
       <div className="vt-head-row">
@@ -870,8 +876,16 @@ function ListView({ vendors, stats, me, title, formNote, onOpen, showForm, setSh
         <div className="vt-list-head">
           <span>Vendor</span><span>Added by</span><span>Progress</span><span>Last activity</span>
         </div>
+        {vendors.length > 0 && (
+          <div className="vt-list-search">
+            <SearchBar value={query} onChange={setQuery} placeholder="Search vendors by name…" />
+          </div>
+        )}
         {orderedVendors.length === 0 && <p className="vt-empty vt-list-empty">No vendors yet. Register your first one above.</p>}
-        {orderedVendors.map((v) => {
+        {orderedVendors.length > 0 && shownVendors.length === 0 && (
+          <p className="vt-empty vt-list-empty">No vendors match “{query.trim()}”.</p>
+        )}
+        {shownVendors.map((v) => {
           const t = tone(v);
           const done = progress(v);
           const total = taskCount(v);
@@ -906,6 +920,25 @@ function Stat({ n, label, tone }) {
     <div className="vt-stat">
       <span className={`vt-stat-n vt-tone-text-${tone}`}>{n}</span>
       <span className="vt-stat-label">{label}</span>
+    </div>
+  );
+}
+
+function SearchBar({ value, onChange, placeholder }) {
+  return (
+    <div className="vt-search">
+      <span className="vt-search-ico" aria-hidden>⌕</span>
+      <input
+        type="search"
+        className="vt-search-input"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={placeholder}
+      />
+      {value && (
+        <button className="vt-search-clear" onClick={() => onChange("")} aria-label="Clear search">×</button>
+      )}
     </div>
   );
 }
@@ -1372,6 +1405,19 @@ function ItemsSection({ me, page, onSwitch }) {
 /*  NEW ITEMS — list view                                             */
 /* ================================================================== */
 function ItemsListView({ items, stats, me, onOpen, showForm, setShowForm, draftName, setDraftName, onAdd }) {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const shownItems = useMemo(
+    () =>
+      q
+        ? items.filter(
+            (it) =>
+              (it.name || "").toLowerCase().includes(q) ||
+              it.item_vendors.some((v) => (v.name || "").toLowerCase().includes(q))
+          )
+        : items,
+    [items, q]
+  );
   return (
     <>
       <div className="vt-head-row">
@@ -1413,8 +1459,16 @@ function ItemsListView({ items, stats, me, onOpen, showForm, setShowForm, draftN
         <div className="vt-list-head">
           <span>Item</span><span>Added by</span><span>Vendors</span><span>Last activity</span>
         </div>
+        {items.length > 0 && (
+          <div className="vt-list-search">
+            <SearchBar value={query} onChange={setQuery} placeholder="Search items or candidate vendors…" />
+          </div>
+        )}
         {items.length === 0 && <p className="vt-empty vt-list-empty">No items yet. Add your first one above.</p>}
-        {items.map((it) => {
+        {items.length > 0 && shownItems.length === 0 && (
+          <p className="vt-empty vt-list-empty">No items match “{query.trim()}”.</p>
+        )}
+        {shownItems.map((it) => {
           const t = itemTone(it);
           const total = vendorCount(it);
           const resolved = resolvedCount(it);
@@ -1994,6 +2048,15 @@ const css = `
 .vt-list{background:var(--surface); border:1px solid var(--line); border-radius:12px; overflow:hidden;}
 .vt-list-head{display:grid; grid-template-columns:1.4fr 1fr 1.1fr .8fr; gap:12px; padding:12px 20px 12px 24px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); border-bottom:1px solid var(--line); background:#F7F9FC;}
 .vt-list-empty{padding:28px 24px;}
+
+.vt-list-search{padding:12px 20px 12px 24px; border-bottom:1px solid var(--line); background:var(--surface);}
+.vt-search{position:relative;}
+.vt-search-ico{position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:17px; line-height:1; pointer-events:none;}
+.vt-search-input{width:100%; font:inherit; font-size:14px; color:var(--ink); border:1px solid var(--line); border-radius:9px; padding:9px 34px; background:#FAFBFD; -webkit-appearance:none; appearance:none;}
+.vt-search-input::-webkit-search-decoration, .vt-search-input::-webkit-search-cancel-button{-webkit-appearance:none;}
+.vt-search-input:focus{outline:2px solid var(--accent-soft); border-color:var(--accent); background:var(--surface);}
+.vt-search-clear{position:absolute; right:8px; top:50%; transform:translateY(-50%); border:none; background:none; color:var(--muted); font-size:18px; line-height:1; cursor:pointer; padding:2px 6px;}
+.vt-search-clear:hover{color:var(--accent);}
 .vt-row{position:relative; display:grid; grid-template-columns:1.4fr 1fr 1.1fr .8fr; gap:12px; align-items:center; width:100%; text-align:left; background:none; border:none; border-bottom:1px solid var(--line); padding:16px 20px 16px 24px; cursor:pointer; font:inherit; transition:background .12s;}
 .vt-row:last-child{border-bottom:none;}
 .vt-row:hover{background:#F7F9FC;}
