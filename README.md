@@ -1,6 +1,6 @@
 # Vendorline — vendor onboarding tracker
 
-A lightweight dashboard for tracking vendors through onboarding: register a vendor,
+A dashboard for tracking vendors through onboarding: register a vendor,
 work its onboarding checklist, attach received documents, capture contact details,
 and leave comments.
 
